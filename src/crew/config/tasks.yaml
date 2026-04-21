@@ -1,21 +1,21 @@
 fetch_and_store_task:
   description: >
-    You are responsible for updating the AegisEco database with the latest meteorological data.
-    You must perform two distinct steps:
-    1. Use the 'Sync Rain Data' tool to fetch the current measurements from IMS and save them directly to the database in one action.
-    2. Use the 'Update Database Forecasts' tool to fetch the 6-hour rainfall forecasts.
+    You are responsible for updating the AegisEco database with the latest meteorological and hydrological data.
+    You must perform three distinct steps:
+    1. Use the 'Sync Rain Data' tool to fetch current measurements from IMS and save them.
+    2. Use the 'Sync Flow Data' tool to fetch current river flow measurements and save them.
+    3. Use the 'Update Database Forecasts' tool to fetch the 6-hour rainfall forecasts.
   expected_output: >
-    A short summary confirming the real-time data sync and the forecast updates.
+    A short summary confirming the real-time data syncs (rain and flow) and the forecast updates.
   agent: data_engineer
 
 analyze_risk_task:
   description: >
-    Use the 'Query High Rainfall Events' tool to search the database for any 
-    recorded measurements where the rainfall exceeded 5.0 mm (in one row). 
-    Analyze the historical February data returned by the tool.
+    Use the 'Run ML Inference on All Basins' tool to execute the XGBoost predictive models on the real-time data.
+    Review the generated ML report carefully. If any basin shows a 'CRITICAL ALERT', flag it immediately and note the exact probability.
+    If all basins are normal, state clearly that no alerts were triggered. Pass this critical information to the Communications Officer.
   expected_output: >
-    A list of flagged stations including the station name, exact date/time, and rainfall amount. 
-    If no stations crossed the threshold, output "No anomalies detected."
+    A summary of the ML inference results, highlighting any basins that have triggered a flash flood alert, including their specific probabilities.
   agent: flood_analyst
 
 alert_task:

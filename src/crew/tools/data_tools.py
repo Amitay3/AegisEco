@@ -11,6 +11,8 @@ from crewai.tools import tool
 # Internal Imports using absolute paths
 from src.data_sentinel.ims_client import get_all_latest_rain_records
 from src.database.db_manager import save_ims_batch_to_db
+from src.data_sentinel.flow_ingestor import AegisEcoDataIngestor
+
 
 # --- CONSTANTS ---
 WARNINGS_URL = "https://ims.gov.il/sites/default/files/ims_data/rss/alert/rssAlert_general_country_en.xml"
@@ -186,3 +188,22 @@ def update_forecasts_tool() -> str:
         if 'conn' in locals() and conn:
             cursor.close()
             conn.close()
+
+
+@tool("Sync Flow Data")
+def sync_flow_data_tool() -> str:
+    """
+    Fetches the latest river flow measurements from the Weather2Day API 
+    and saves them directly to the PostGIS database.
+    """
+    try:
+        ingestor = AegisEcoDataIngestor()
+        live_map_data = ingestor.fetch_live_data()
+        
+        if not live_map_data:
+            return "Warning: No flow data fetched from API."
+            
+        ingestor.save_to_neon(live_map_data)
+        return f"Success: Fetched and saved {len(live_map_data)} river flow records to the database."
+    except Exception as e:
+        return f"Error syncing flow data: {str(e)}"

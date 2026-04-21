@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 from datetime import datetime, timedelta
 load_dotenv()
 
-# Configuration
+# Configuration     
 API_TOKEN = os.getenv("IMS_API_KEY")
 STATION_ID = 21        
 BASE_URL = "https://api.ims.gov.il/v1/envista/stations"

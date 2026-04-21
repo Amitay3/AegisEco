@@ -2,8 +2,8 @@ import os
 from crewai import Agent, Crew, Process, Task
 from crewai.project import CrewBase, agent, crew, task
 # Import the database and data tools using absolute paths from the root
-from src.crew.tools.db_tools import get_high_rainfall_events
-from src.crew.tools.data_tools import sync_rain_data_tool, update_forecasts_tool, fetch_ims_warnings_tool
+from src.crew.tools.db_tools import get_high_rainfall_events, run_all_basins_inference_tool
+from src.crew.tools.data_tools import sync_rain_data_tool, update_forecasts_tool, fetch_ims_warnings_tool, sync_flow_data_tool
 
 
 @CrewBase
@@ -18,7 +18,7 @@ class AegisEcoCrew():
     def data_engineer(self) -> Agent:
         return Agent(
             config=self.agents_config['data_engineer'],
-            tools=[sync_rain_data_tool, update_forecasts_tool] 
+            tools=[sync_rain_data_tool, sync_flow_data_tool, update_forecasts_tool] 
         )
 
     @agent
@@ -32,7 +32,8 @@ class AegisEcoCrew():
     def flood_analyst(self) -> Agent:
         return Agent(
             config=self.agents_config['flood_analyst'],
-            tools=[get_high_rainfall_events] 
+            # החלפנו את כלי השאילתה הפשוט בכלי הלמידת מכונה האמיתי!
+            tools=[run_all_basins_inference_tool] 
         )
 
     @agent
