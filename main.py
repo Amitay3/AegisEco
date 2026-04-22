@@ -25,28 +25,27 @@ from src.crew.aegiseco_crew import AegisEcoCrew
 
 last_sigint_time = 0
 scheduler = BackgroundScheduler()
-def run_system_cycle():
+def run_system_cycle(mode="full"):
     """
-    Executes the main system cycle.
-    Rotates between different Gemini models by updating the environment variables
-    if the primary model fails.
+    Executes the system cycle.
+    mode="full" runs all agents (top of the hour).
+    mode="data_only" runs only the Data Engineer (minutes 20, 40).
     """
     current_time = datetime.now().strftime('%H:%M:%S')
-    print(f"\n[{current_time}] Starting AegisEco System Cycle...")
+    cycle_name = "FULL System Cycle" if mode == "full" else "DATA SYNC ONLY Cycle"
+    print(f"\n[{current_time}] Starting AegisEco {cycle_name}...")
 
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
         print("Error: GEMINI_API_KEY is missing from .env file.")
         return
 
-    # Ensure the API key is explicitly set in the environment for LiteLLM
     os.environ["GEMINI_API_KEY"] = api_key
 
-    # Define the models to try in order of preference
     models_to_try = [
-        "gemini/gemini-2.5-flash-lite", # Primary: Fastest, lowest cost
-        "gemini/gemini-2.5-flash",      # Backup 1: Standard flash
-        "gemini/gemini-2.0-pro-exp"     # Backup 2: Most capable, highest cost
+        "gemini/gemini-2.5-flash-lite",
+        "gemini/gemini-2.5-flash",
+        "gemini/gemini-2.0-pro-exp"
     ]
 
     result = None
@@ -55,20 +54,15 @@ def run_system_cycle():
         attempt = attempt_idx + 1
         try:
             print(f"--- Attempt {attempt} (Model: {model_name}) ---")
-            
-            # The Magic Fix: Update the environment variable BEFORE creating the crew.
-            # CrewAI 1.14.1+ agents will automatically pick up this default model if 
-            # no explicit LLM object is passed to them.
             os.environ["MODEL"] = model_name
             
-            # Initialize the project AFTER setting the environment variable
             aegis_project = AegisEcoCrew()
-            full_crew = aegis_project.crew()
             
-            # Note: We NO LONGER loop through full_crew.agents and inject the LLM manually.
-            # The agents will use the MODEL environment variable we just set.
-                
-            result = full_crew.kickoff()
+            if mode == "data_only":
+                active_crew = aegis_project.data_only_crew()
+            else:
+                active_crew = aegis_project.crew()
+            result = active_crew.kickoff()
             
             finish_time = datetime.now().strftime('%H:%M:%S')
             print(f"\n[{finish_time}] Cycle Completed Successfully!")
@@ -76,26 +70,20 @@ def run_system_cycle():
             print(result)
             print("=========================================\n")
             
-            break  # Exit loop on success
+            break 
             
         except Exception as e:
             error_msg = str(e)
             print(f"\nAttempt {attempt} Failed: {error_msg[:150]}...")
-            
             if attempt < len(models_to_try):
                 print(f"Model failure detected. Switching to backup model: {models_to_try[attempt_idx + 1]}...")
-                time.sleep(2) # Brief pause before trying the next model
+                time.sleep(2)
             else:
                 print("All models failed. System cycle aborted.")
-                
+
 def print_next_run_time(event=None):
-    """
-    Calculates and prints the scheduled time for the next cycle.
-    """
     now = datetime.now()
-    next_hour = (now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1))
-    run_time_str = next_hour.strftime('%H:%M:%S')
-    print(f"\nSleeping... Next system cycle is scheduled for: {run_time_str}\n")
+    print(f"\n[Scheduler] Action completed. System is standing by...\n")
 
 if __name__ == "__main__":
     load_dotenv()
@@ -104,13 +92,33 @@ if __name__ == "__main__":
     print("Monitoring Israel Floods...")
     print("Press Ctrl+C to exit.\n")
     
-    run_system_cycle()
+    # Run a full cycle immediately on startup
+    run_system_cycle(mode="full")
+    # 1. Full cycle exactly on the hour (xx:00)
+    scheduler.add_job(
+        run_system_cycle, 
+        'cron', 
+        minute=0, 
+        kwargs={"mode": "full"}, 
+        misfire_grace_time=900, 
+        coalesce=True, 
+        max_instances=1,
+        id='full_cycle_job'
+    ) 
     
-    scheduler.add_job(run_system_cycle, 'cron', minute=0) 
+    # 2. Data sync only every 10 minutes
+    scheduler.add_job(
+        run_system_cycle, 
+        'cron', 
+        minute= '10,20,30,40,50',
+        kwargs={"mode": "data_only"}, 
+        misfire_grace_time=300, 
+        coalesce=True, 
+        max_instances=1,
+        id='data_sync_job'
+    )
+    
     scheduler.add_listener(print_next_run_time, EVENT_JOB_EXECUTED)
-    
-    print_next_run_time()
-    
     scheduler.start()
     
     try:

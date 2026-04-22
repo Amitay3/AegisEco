@@ -10,7 +10,6 @@ from src.crew.tools.data_tools import sync_rain_data_tool, update_forecasts_tool
 class AegisEcoCrew():
     """AegisEco Flood Detection Crew"""
     
-    # Define the paths to the YAML configuration files
     agents_config = 'config/agents.yaml'
     tasks_config = 'config/tasks.yaml'
 
@@ -71,12 +70,23 @@ class AegisEcoCrew():
             agent=self.warning_monitor()
         )
     
+    # Main crew that runs all agents
     @crew
     def crew(self) -> Crew:
         """Creates the AegisEco crew"""
         return Crew(
             agents=self.agents,
             tasks=self.tasks,
+            process=Process.sequential,
+            verbose=True
+        )
+    
+    # This is a sub-crew that only runs the data fetching and storing
+    def data_only_crew(self) -> Crew:
+        """Creates a sub-crew that only fetches and stores data"""
+        return Crew(
+            agents=[self.data_engineer()],
+            tasks=[self.fetch_and_store_task()],
             process=Process.sequential,
             verbose=True
         )

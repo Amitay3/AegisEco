@@ -1,152 +1,156 @@
-import requests
-import time
 import os
+import time
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
-from datetime import datetime, timedelta
+
 load_dotenv()
 
-# Configuration     
 API_TOKEN = os.getenv("IMS_API_KEY")
-STATION_ID = 21        
 BASE_URL = "https://api.ims.gov.il/v1/envista/stations"
 
-headers = {
-    'Authorization': f'ApiToken {API_TOKEN}'
-}
+def _get_ims_session():
+    """Creates a robust session for IMS API."""
+    session = requests.Session()
+    retry_strategy = Retry(
+        total=5,
+        backoff_factor=2,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["GET"]
+    )
+    adapter = HTTPAdapter(max_retries=retry_strategy, pool_connections=20, pool_maxsize=20)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    session.headers.update({
+        'Authorization': f'ApiToken {API_TOKEN}',
+        'Content-Type': 'application/json'
+    })
+    return session
 
-def get_rain_data_by_station(station_id):
-    # 1. Fetch metadata
-    meta_url = f"{BASE_URL}/{station_id}"
-    meta_response = requests.get(meta_url, headers=headers)
-    
-    if meta_response.status_code != 200:
-        print(f"Error fetching metadata: {meta_response.status_code}")
-        return None
-
-    station_info = meta_response.json()
-    
-    # Extract station-level metadata for the table
-    station_name = station_info.get('name')
-    region_id = station_info.get('regionId')
-    
-    rain_channel_id = None
-    for monitor in station_info.get('monitors', []):
-        if monitor.get('name') == 'Rain':
-            rain_channel_id = monitor.get('channelId')
-            break
-
-    if not rain_channel_id:
-        print(f"Rain channel not found for station {station_id}")
-        return None
-
-    # 2. Fetch latest measurement
+def _fetch_single_station_latest(session, station_id, station_name, region_id, rain_channel_id):
+    """Fetches data and returns a categorized dictionary instead of printing directly."""
     data_url = f"{BASE_URL}/{station_id}/data/{rain_channel_id}/latest"
-    data_response = requests.get(data_url, headers=headers)
-
-    if data_response.status_code == 200:
-        result = data_response.json()
+    try:
+        response = session.get(data_url, timeout=15)
         
-        if result.get('data') and len(result['data']) > 0:
-            latest_measure = result['data'][0]
-            channel_data = latest_measure['channels'][0]
+        if response.status_code == 200 and response.text.strip():
+            data_json = response.json()
             
-            # Map API response to Database fields
-            data_record = {
-                "station_id": int(station_id),
-                "rain_amount_mm": float(channel_data['value']),
-                "measurement_time": latest_measure['datetime'],
-                "station_name": station_name,
-                "region_id": region_id,
-                "status": int(channel_data['status'])
-            }
+            if data_json.get('data') and len(data_json['data']) > 0:
+                measure = data_json['data'][0]
+                channel_data = measure['channels'][0]
+                
+                measure_time_str = measure['datetime']
+                
+                # Parse datetime to check if it's within the last 24 hours
+                try:
+                    measure_time = datetime.fromisoformat(measure_time_str.replace('Z', '+00:00'))
+                    if measure_time.tzinfo is None:
+                        measure_time = measure_time.replace(tzinfo=timezone.utc)
+                    
+                    if datetime.now(timezone.utc) - measure_time > timedelta(hours=24):
+                        return {"category": "skipped", "name": station_name, "reason": "Older than 24 hours", "time": measure_time_str}
+                except ValueError:
+                    pass # Fallback if datetime parsing fails
+
+                data_record = {
+                    "station_id": int(station_id),
+                    "rain_amount_mm": float(channel_data['value']),
+                    "measurement_time": measure_time_str,
+                    "station_name": station_name,
+                    "region_id": region_id,
+                    "status": int(channel_data['status'])
+                }
+                return {"category": "success", "name": station_name, "amount": data_record['rain_amount_mm'], "time": measure_time_str, "record": data_record}
+                
+        elif response.status_code == 204:
+            return {"category": "error", "name": station_name, "reason": "No data available (204)"}
+        else:
+            return {"category": "error", "name": station_name, "reason": f"HTTP Error {response.status_code}"}
             
-            return data_record
-    else:
-        print(f"Error fetching data: {data_response.status_code}")
-        return None
-    
+    except requests.exceptions.JSONDecodeError:
+        return {"category": "error", "name": station_name, "reason": "API returned non-JSON response"}
+    except Exception as e:
+        return {"category": "error", "name": station_name, "reason": f"Connection error: {str(e)}"}
+        
+    return {"category": "error", "name": station_name, "reason": "Unknown error"}
+
 def get_all_latest_rain_records():
-    """
-    Fetches the single most recent 10-minute measurement for every station.
-    Returns a list of records ready for the db_manager.
-    """
-    all_latest_records = []
+    """Fetches records concurrently, categorizes them, prints formatted logs, and returns the valid data."""
+    session = _get_ims_session()
     
-    # 1. Get the master list of stations
-    response = requests.get(BASE_URL, headers=headers)
-    if response.status_code != 200:
-        print("Failed to fetch stations list")
+    try:
+        response = session.get(BASE_URL, timeout=10)
+        response.raise_for_status()
+        stations = response.json()
+    except Exception as e:
+        print(f"Failed to fetch master stations list: {e}")
         return []
 
-    stations = response.json()
+    tasks = []
+    results = {"success": [], "error": [], "skipped": []}
+    valid_records = []
+    
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        for station in stations:
+            station_id = station.get('stationId')
+            station_name = station.get('name')
+            region_id = station.get('regionId')
+            
+            rain_channel_id = next((m.get('channelId') for m in station.get('monitors', []) 
+                                    if m.get('name') == 'Rain'), None)
 
-    for station in stations:
-        station_id = station.get('stationId')
-        station_name = station.get('name')
-        region_id = station.get('regionId')
-        
-        # Find the Rain channel ID
-        rain_channel_id = next((m.get('channelId') for m in station.get('monitors', []) 
-                                if m.get('name') == 'Rain'), None)
+            if rain_channel_id:
+                future = executor.submit(
+                    _fetch_single_station_latest, session, station_id, station_name, region_id, rain_channel_id
+                )
+                tasks.append(future)
 
-        if not rain_channel_id:
-            continue
+        for future in as_completed(tasks):
+            res = future.result()
+            if res:
+                results[res["category"]].append(res)
+                if res["category"] == "success":
+                    valid_records.append(res["record"])
 
-        # 2. Use the /latest endpoint for this specific channel
-        # Format: /stations/{stationId}/data/{channelId}/latest
-        data_url = f"{BASE_URL}/{station_id}/data/{rain_channel_id}/latest"
-        data_resp = requests.get(data_url, headers=headers)
+    # --- FORMATTED PRINTING ---
+    if results["success"]:
+        print("\nFetched Latest:")
+        for item in results["success"]:
+            rain_text = f"{item['amount']}mm"
+            print(f"    {item['name']:<30} | {rain_text:<8} | {item['time']}")
+            
+    if results["error"]:
+        print("\nDid Not Fetch:")
+        for item in results["error"]:
+            print(f"    {item['name']:<30} | {item['reason']}")
+            
+    if results["skipped"]:
+        print("\nSkipped (Not from last 24h):")
+        for item in results["skipped"]:
+            print(f"    {item['name']:<30} | {item['time']:<25} | {item['reason']}")
 
-        if data_resp.status_code == 200 and data_resp.text.strip():
-            try:
-                data_json = data_resp.json()
-                # The /latest endpoint returns the most recent measurement(s) in the 'data' array
-                if data_json.get('data') and len(data_json['data']) > 0:
-                    measure = data_json['data'][0]
-                    channel_data = measure['channels'][0]
-                    
-                    # Create the record structure for your db_manager
-                    data_record = {
-                        "station_id": int(station_id),
-                        "rain_amount_mm": float(channel_data['value']),
-                        "measurement_time": measure['datetime'],
-                        "station_name": station_name,
-                        "region_id": region_id,
-                        "status": int(channel_data['status'])
-                    }
-                    
-                    # Log successful fetch
-                    print(f"Fetched Latest: {station_name} | {data_record['rain_amount_mm']}mm")
-                    all_latest_records.append(data_record)
-                        
-            except requests.exceptions.JSONDecodeError:
-                        # This happens if the API returns non-JSON text (like an HTML error page)
-                        print(f"Station: {station_name} - API returned non-JSON response.")
-                
-        elif data_resp.status_code == 204:
-                    # 204 means "No Content" - the 'proper' way the API tells you there's no data
-                    print(f"Station: {station_name} - No data available (204).")
-        else:
-            # Status 204 means the station is likely offline or hasn't reported recently
-            if data_resp.status_code != 204:
-                print(f"Station: {station_name} - Failed (Status {data_resp.status_code})")
-
-    print(f"\n Successfully collected {len(all_latest_records)} latest records.")
-    return all_latest_records
+    print(f"\nSuccessfully collected {len(valid_records)} valid, recent records.")
+    return valid_records
 
 def get_february_data_all_stations():
     """
     Fetches every 10-minute measurement for February 2026 for all stations.
+    Note: Updated to use the robust session without concurrency to respect long historical API limits.
     """
     all_feb_records = []
+    session = _get_ims_session()
     
-    # 1. Get the master list of stations
-    response = requests.get(BASE_URL, headers=headers)
-    if response.status_code != 200:
+    try:
+        response = session.get(BASE_URL, timeout=10)
+        response.raise_for_status()
+        stations = response.json()
+    except Exception as e:
         print("Failed to fetch stations list")
         return []
-
-    stations = response.json()
 
     for station in stations:
         station_id = station.get('stationId')
@@ -159,20 +163,16 @@ def get_february_data_all_stations():
         if not rain_channel_id:
             continue
 
-        # 2. Use the /monthly endpoint for February 2026
-        # Format: /stations/{stationId}/data/{channelId}/monthly/2026/02
         data_url = f"{BASE_URL}/{station_id}/data/{rain_channel_id}/monthly/2026/02"
-        data_resp = requests.get(data_url, headers=headers)
+        try:
+            data_resp = session.get(data_url, timeout=15)
 
-        if data_resp.status_code == 200 and data_resp.text.strip():
-            try:
+            if data_resp.status_code == 200 and data_resp.text.strip():
                 data_json = data_resp.json()
                 measurements = data_json.get('data', [])
                 
-                # IMPORTANT: Loop through ALL measurements in the monthly array
                 for measure in measurements:
                     channel_data = measure['channels'][0]
-                    
                     data_record = {
                         "station_id": int(station_id),
                         "rain_amount_mm": float(channel_data['value']),
@@ -182,58 +182,51 @@ def get_february_data_all_stations():
                         "status": int(channel_data['status'])
                     }
                     
-                    # Filter out hardware errors (-9999) and invalid data
                     if data_record['rain_amount_mm'] >= 0 and data_record['status'] == 1:
                         all_feb_records.append(data_record)
                         
-            except requests.exceptions.JSONDecodeError:
-                print(f"Station: {station_name} - API returned non-JSON response.")
-        
-        # Add a tiny sleep to be polite to the IMS API rate limits
+        except requests.exceptions.JSONDecodeError:
+            print(f"Did Not Fetch: {station_name} | API returned non-JSON response")
+        except Exception as e:
+            print(f"Did Not Fetch: {station_name} | Connection error: {str(e)}")
+            
         time.sleep(0.1)
 
     print(f"\n Total records collected for February: {len(all_feb_records)}")
     return all_feb_records
 
 def get_rain_last_hour(station_id):
-    """Calculates total rainfall sum in the last 60 minutes (6 measurements)."""
-    
-    # 1. Fetch metadata to get station_info
+    """Calculates total rainfall sum in the last 60 minutes."""
+    session = _get_ims_session()
     meta_url = f"{BASE_URL}/{station_id}"
-    meta_response = requests.get(meta_url, headers=headers)
     
-    if meta_response.status_code != 200:
-        print(f"Error fetching metadata: {meta_response.status_code}")
-        return 0.0
-
-    station_info = meta_response.json()
-    
-    # 2. Extract rain_channel_id
-    rain_channel_id = None
-    for monitor in station_info.get('monitors', []):
-        if monitor.get('name') == 'Rain':
-            rain_channel_id = monitor.get('channelId')
-            break
-
-    if not rain_channel_id:
-        print(f"Rain channel not found for station {station_id}")
-        return 0.0
+    try:
+        meta_response = session.get(meta_url, timeout=10)
+        meta_response.raise_for_status()
+        station_info = meta_response.json()
         
-    # 3. Fetch daily data
-    daily_url = f"{BASE_URL}/{station_id}/data/{rain_channel_id}/daily"
-    resp = requests.get(daily_url, headers=headers)
-    
-    if resp.status_code == 200:
-        data = resp.json().get('data', [])
-        # Get the 6 most recent 10-minute measurements
-        recent_6 = data[-6:] 
-        total_hour = sum(m['channels'][0]['value'] for m in recent_6 if m['channels'][0]['status'] == 1)
+        rain_channel_id = next((m.get('channelId') for m in station_info.get('monitors', []) 
+                                if m.get('name') == 'Rain'), None)
+
+        if not rain_channel_id:
+            print(f"Rain channel not found for station {station_id}")
+            return 0.0
+            
+        daily_url = f"{BASE_URL}/{station_id}/data/{rain_channel_id}/daily"
+        resp = session.get(daily_url, timeout=10)
         
-        print(f"Station {station_id} | Last Hour Total: {total_hour:.2f}mm")
-        return total_hour
+        if resp.status_code == 200:
+            data = resp.json().get('data', [])
+            recent_6 = data[-6:] 
+            total_hour = sum(m['channels'][0]['value'] for m in recent_6 if m['channels'][0]['status'] == 1)
+            
+            print(f"Station {station_id} | Last Hour Total: {total_hour:.2f}mm")
+            return total_hour
+            
+    except Exception as e:
+        print(f"Failed to calculate last hour data for {station_id}: {e}")
+        
     return 0.0
 
 if __name__ == "__main__":
-    # get_rain_data_by_station(STATION_ID)
     get_all_latest_rain_records()
-    # analyze_rain_trend(STATION_ID)

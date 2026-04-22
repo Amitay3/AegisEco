@@ -7,21 +7,24 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from crewai.tools import tool
+import re
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:
+    from datetime import timezone, timedelta
 
-# Internal Imports using absolute paths
+# Internal Imports
 from src.data_sentinel.ims_client import get_all_latest_rain_records
 from src.database.db_manager import save_ims_batch_to_db
 from src.data_sentinel.flow_ingestor import AegisEcoDataIngestor
 
-
-# --- CONSTANTS ---
 WARNINGS_URL = "https://ims.gov.il/sites/default/files/ims_data/rss/alert/rssAlert_general_country_en.xml"
 FORECAST_URL = "https://ims.gov.il/sites/default/files/ims_data/xml_files/isr_cities_1week_6hr_forecast.xml" 
 
-# Use absolute pathing from the current working directory (AegisEco Root)
+# Use absolute pathing
 MAPPING_FILE = os.path.join(os.getcwd(), "data", "ims_to_db_mapping.csv")
 
-# TOOL 1: SYNC REAL-TIME RAIN DATA
+# Tool 1: Sync Rain Data from IMS to Database
 @tool("Sync Rain Data")
 def sync_rain_data_tool() -> str:
     """
@@ -37,11 +40,12 @@ def sync_rain_data_tool() -> str:
     save_ims_batch_to_db(records)
     return f"Success: Fetched {len(records)} records from IMS and saved to the database."
 
-# TOOL 2: IMS WARNINGS
+# Tool 2: Fetch Active IMS Warnings
 @tool("Fetch IMS Warnings")
 def fetch_ims_warnings_tool() -> str:
     """
     Fetches active weather warnings from the IMS RSS feed.
+    Filters out warnings that have already expired based on the 'until' timestamp.
     Returns a text summary of active warnings.
     """
     try:
@@ -54,21 +58,58 @@ def fetch_ims_warnings_tool() -> str:
         if not items:
             return "No active warnings currently in the IMS feed."
             
-        warnings_text = "Active IMS Warnings found:\n"
-        for item in items:
-            title = item.find('title').text if item.find('title') is not None else 'No Title'
-            description = item.find('description').text if item.find('description') is not None else 'No Description'
-            description = description.replace("<p style='padding-bottom:30px;'>", "").replace("</p>", "").strip()
+        # Define Israel timezone for accurate expiration checking against local time (LT)
+        try:
+            israel_tz = ZoneInfo("Asia/Jerusalem")
+        except NameError:
+            israel_tz = timezone(timedelta(hours=3))
             
+        now = datetime.now(israel_tz)
+        active_warnings_count = 0
+        warnings_text = "Active IMS Warnings found:\n"
+        
+        for item in items:
+            # Smart extraction of text even from embedded HTML tags
+            title_elem = item.find('title')
+            title = "".join(title_elem.itertext()).strip() if title_elem is not None else 'No Title'
+            
+            desc_elem = item.find('description')
+            description = "".join(desc_elem.itertext()).strip() if desc_elem is not None else 'No Description'
+            
+            # Extract the expiration time using Regex: 'until DD/MM HH'
+            match = re.search(r'until\s+(\d{2})/(\d{2})\s+(\d{2})', description)
+            if match:
+                day = int(match.group(1))
+                month = int(match.group(2))
+                hour = int(match.group(3))
+                year = now.year
+                
+                # Handle edge case: warning issued in December valid until January
+                if month == 1 and now.month == 12:
+                    year += 1
+                    
+                try:
+                    expiration_time = datetime(year, month, day, hour, 0, tzinfo=israel_tz)
+                    
+                    # If current time is strictly greater than expiration time, skip this warning
+                    if now > expiration_time:
+                        continue
+                except ValueError:
+                    pass
+            
+            # Add to text only if it hasn't expired or didn't match the regex format
+            active_warnings_count += 1
             warnings_text += f"- Title: {title}\n  Details: {description}\n\n"
+            
+        if active_warnings_count == 0:
+            return "No active warnings currently in the IMS feed."
             
         return warnings_text
         
     except Exception as e:
         return f"Error fetching warnings: {str(e)}"
 
-
-# TOOL 3: FORECAST UPDATER
+# Helper function for Tool 3
 def _get_target_time_windows():
     """Helper: Calculates the current and next 6-hour IMS forecast windows."""
     now = datetime.now()
@@ -95,6 +136,7 @@ def _get_target_time_windows():
     
     return current_window_str, next_window_str
 
+# Parse the IMS forecast XML for tool 3
 def _parse_xml_to_dict():
     """Helper: Fetches XML and returns a dictionary of {IMS_LocationId: (CurrentRain, NextRain)}"""
     response = requests.get(FORECAST_URL, timeout=10)
@@ -132,7 +174,7 @@ def _parse_xml_to_dict():
         
     return forecast_dict
 
-# TOOL 4: UPDATE CITIES RAIN FORECASTS
+# Tool 3: Update Forecasts in Database
 @tool("Update Database Forecasts")
 def update_forecasts_tool() -> str:
     """
@@ -189,7 +231,7 @@ def update_forecasts_tool() -> str:
             cursor.close()
             conn.close()
 
-
+# Tool 4: Sync Flow Data from Weather2Day API to Database
 @tool("Sync Flow Data")
 def sync_flow_data_tool() -> str:
     """

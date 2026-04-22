@@ -14,8 +14,7 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 def save_ims_batch_to_db(records: list):
     """
     Saves a batch of rain records to the database.
-    Ignores records for stations that do not exist in the 'stations' table
-    to prevent Foreign Key violation errors.
+    Prints skipped records that were ignored due to ON CONFLICT.
     """
     if not records:
         print("No records to save.")
@@ -30,7 +29,6 @@ def save_ims_batch_to_db(records: list):
         conn = psycopg2.connect(db_url)
         cursor = conn.cursor()
 
-        # Prepare the data tuples for bulk insertion
         values_to_insert = [
             (
                 rec['station_id'],
@@ -42,7 +40,7 @@ def save_ims_batch_to_db(records: list):
             )
             for rec in records
         ]
-        # Check which stations are missing from the local database
+
         cursor.execute("SELECT station_id FROM stations;")
         existing_station_ids = {row[0] for row in cursor.fetchall()}
         
@@ -52,10 +50,8 @@ def save_ims_batch_to_db(records: list):
                 missing_stations.append(f"{rec['station_id']} ({rec['station_name']})")
                 
         if missing_stations:
-            print(f"Skipping {len(missing_stations)} unregistered stations: {', '.join(missing_stations)}")
+            print(f"\nSkipping {len(missing_stations)} unregistered stations: {', '.join(missing_stations)}")
             
-        # The safe SQL query: 
-        # Casts measurement_time to timestamp and filters out unknown stations.
         insert_query = """
             INSERT INTO rain_measurements (
                 station_id, station_name, measurement_time, rain_amount_mm, region_id, status
@@ -65,21 +61,31 @@ def save_ims_batch_to_db(records: list):
             WHERE EXISTS (
                 SELECT 1 FROM stations s WHERE s.station_id = v.station_id
             )
-            ON CONFLICT DO NOTHING;
+            ON CONFLICT DO NOTHING
+            RETURNING station_id;
         """
 
-        # Using execute_values for efficient bulk insert
-        execute_values(cursor, insert_query, values_to_insert)
+        returned_rows = execute_values(cursor, insert_query, values_to_insert, fetch=True)
         conn.commit()
         
-        # Determine how many rows were actually inserted (optional, but good for logging)
-        inserted_count = cursor.rowcount
-        print(f"Successfully saved {inserted_count} records to 'rain_measurements'.")
+        inserted_station_ids = {row[0] for row in returned_rows} if returned_rows else set()
+        
+        ignored_records = []
+        for rec in records:
+            if rec['station_id'] in existing_station_ids and rec['station_id'] not in inserted_station_ids:
+                ignored_records.append(rec)
+                
+        if ignored_records:
+            print("\nFetched But Not Saved:")
+            for rec in ignored_records:
+                print(f"    {rec['station_name']} | {rec['rain_amount_mm']}mm | {rec['measurement_time']} | Reason: Already Exists (ON CONFLICT)")
+                
+        print(f"\nSuccessfully saved {len(inserted_station_ids)} new records to 'rain_measurements'.")
 
     except Exception as e:
         print(f"Database Error during save: {e}")
         if 'conn' in locals() and conn:
-            conn.rollback() # Rollback on error
+            conn.rollback()
     finally:
         if 'cursor' in locals():
             cursor.close()
@@ -92,12 +98,10 @@ def save_ims_data_to_db(record):
         return
 
     try:
-        # Connect to the shared cloud database
         conn = psycopg2.connect(DATABASE_URL)
         conn.autocommit = True
         cur = conn.cursor()
         
-        # SQL Query using named placeholders to match the dictionary keys
         insert_query = """
         INSERT INTO rain_measurements (
             station_id, 
@@ -117,7 +121,6 @@ def save_ims_data_to_db(record):
         );
         """
         
-        # Execute using the record dictionary directly
         cur.execute(insert_query, record)
         
         print(f"Successfully saved {record['rain_amount_mm']}mm for {record['station_name']} (ID: {record['station_id']})")
@@ -151,7 +154,6 @@ def get_live_features_for_model(basin_name: str) -> pd.DataFrame:
     df = pd.read_sql(query, conn, params={"basin_name": basin_name, "cutoff_time": cutoff_time})
     conn.close()
 
-    # --- COLD START FIX: Zero-Padding the Timeline ---
     if df.empty:
         print(f"No data at all for {basin_name}. Cannot run.")
         return None
@@ -159,29 +161,20 @@ def get_live_features_for_model(basin_name: str) -> pd.DataFrame:
     df['measurement_time'] = pd.to_datetime(df['measurement_time'])
     df.set_index('measurement_time', inplace=True)
     
-    # 1. Generate a perfect, unbroken hourly grid for the last 192 hours (8 days)
-    # This ends at the timestamp of your latest actual measurement
+
     latest_time = df.index.max()
     full_time_grid = pd.date_range(end=latest_time, periods=192, freq='h')
     
-    # 2. Force your dataframe to fit this grid. Missing past hours become NaNs.
     df = df.reindex(full_time_grid)
     
-    # 3. Fill the synthetic past with safe default values (zeros)
     df['basin_name'] = basin_name
     df['basin_rain_mean'] = df['basin_rain_mean'].fillna(0)
     df['basin_intensity_max'] = df['basin_intensity_max'].fillna(0)
     df['basin_rain_std'] = df['basin_rain_std'].fillna(0)
     df['basin_rain_count'] = df['basin_rain_count'].fillna(0)
     df['basin_intensity_mean'] = df['basin_intensity_mean'].fillna(0)
-    
-    # For flow, assume the river was at its current baseline, or just 0
-    # Forward-fill and backward-fill are safer than pure 0 if it's currently flowing
-    df['flow'] = df['flow'].bfill().fillna(0) 
-    # -------------------------------------------------
 
-    # Now, Pandas has 192 rows to work with, even if 191 of them are synthetically 0.
-    # Recreate your exact training features in memory
+    df['flow'] = df['flow'].bfill().fillna(0) 
     
     for lag in [1, 2, 3, 6, 12, 24]:
         df[f'Flow_lag{lag}h'] = df['flow'].shift(lag)
@@ -218,19 +211,16 @@ def get_live_features_for_model(basin_name: str) -> pd.DataFrame:
     
     df = df.dropna()
 
-    # Extract the very last row for the model
     latest_feature_vector = df.iloc[[-1]]
     
     return latest_feature_vector
 
 
 if __name__ == "__main__":
-    # Pick a basin you know you mapped in the SQL table
     test_basin = "Zin" 
     
     print(f"Testing feature extraction for basin: {test_basin}...")
     
-    # Run the function
     latest_features = get_live_features_for_model(test_basin)
     
     if latest_features is not None:
@@ -238,11 +228,9 @@ if __name__ == "__main__":
         print(f"Shape: {latest_features.shape} (Should be 1 row, ~38 columns)")
         
         print("\n--- LATEST FEATURE VECTOR ---")
-        # Printing it transposed (.T) so it reads vertically like a list, 
-        # otherwise Pandas will truncate columns in the console.
+
         print(latest_features.T)
         
-        # Quick validation check:
         expected_cols = [
             'Basin_Rain_Mean', 'Basin_Intensity_Max', 'Flow_lag1h', 
             'Rolling_Rain_168h', 'Is_Peak_Winter'
