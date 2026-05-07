@@ -1,6 +1,7 @@
 # AI and Agents
 crewai==1.10.1
 langchain-google-genai
+langchain-community
 langchain-groq
 litellm
 
@@ -10,7 +11,16 @@ tiktoken==0.8.0
 
 # Data Handling & Analysis
 pandas
+numpy
 thefuzz[speedup]
+
+# Machine Learning (runtime inference)
+xgboost
+joblib
+
+# Machine Learning (model training and evaluation only)
+scikit-learn
+matplotlib
 
 # Database
 psycopg2-binary
@@ -18,7 +28,7 @@ psycopg2-binary
 # Environment and Web
 python-dotenv==1.1.1
 requests
+duckduckgo-search
 
 # Scheduling
-schedule
 apscheduler
