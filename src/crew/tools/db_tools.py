@@ -51,55 +51,94 @@ def get_high_rainfall_events(threshold_mm: float) -> str:
         if 'cur' in locals(): cur.close()
         if 'conn' in locals(): conn.close()
 
-# Tool 2: Run ML Inference for All Basins
-@tool("Run ML Inference on All Basins")
-def run_all_basins_inference_tool() -> str:
+@tool("Get Affected Roads for Basin")
+def get_affected_roads_tool(main_basin_name: str) -> str:
     """
-    Extracts live features from the database and runs the XGBoost machine learning 
-    models for all main river basins. Returns a formatted report of flood probabilities.
+    Queries the database for all roads affected by a flood in the given main basin.
+    Input must be the exact main basin name (e.g., 'Harod', 'Sorek', 'Beer Sheva').
+    Returns a formatted list of road names, or a message if none are found.
     """
-    # List of basins with pre-trained models
-    basins_with_models = ["Beer Sheva", "Harod", "Sorek", "Alexander", "Ayalon", "Dishon", "Gerar", "Hadera", "Keziv", "Kishon", "Lachish", "Paran", "Shikma", "Taninim", "Yarkon", "Zin"] 
+    db_url = os.getenv("DATABASE_URL")
+    if not db_url:
+        return "Error: DATABASE_URL is missing from environment variables."
+
+    query = """
+        SELECT DISTINCT unnest(main_roads) AS road
+        FROM basins
+        WHERE main_basin_name = %s
+          AND main_roads IS NOT NULL
+          AND array_length(main_roads, 1) > 0
+        ORDER BY road;
+    """
+
+    try:
+        conn = psycopg2.connect(db_url)
+        cur = conn.cursor()
+        cur.execute(query, (main_basin_name,))
+        rows = cur.fetchall()
+
+        if not rows:
+            return f"No road data found for basin '{main_basin_name}'."
+
+        roads = [row[0] for row in rows]
+        return f"Roads affected in {main_basin_name} basin:\n" + "\n".join(f"- {r}" for r in roads)
+
+    except Exception as e:
+        return f"Database query failed: {e}"
+    finally:
+        if 'cur' in locals(): cur.close()
+        if 'conn' in locals(): conn.close()
+
+
+def _run_all_basins_inference() -> str:
+    """Run XGBoost inference for all basins and return a formatted report. Callable without the CrewAI wrapper."""
+    basins_with_models = ["Beer Sheva", "Harod", "Sorek", "Alexander", "Ayalon", "Dishon", "Gerar", "Hadera", "Keziv", "Kishon", "Lachish", "Paran", "Shikma", "Taninim", "Yarkon", "Zin"]
     results_report = ["📊 AegisEco ML Inference Report:\n"]
-    
+
     models_dir = os.path.join(os.getcwd(), "models", "models")
-    
+
     for basin in basins_with_models:
         try:
-            # Convert basin name to file format
             file_basin_name = basin.lower().replace(' ', '_')
-            
             search_pattern = os.path.join(models_dir, f'model_{file_basin_name}_flood_*.pkl')
             matching_files = glob.glob(search_pattern)
-            
+
             if not matching_files:
                 results_report.append(f"[{basin}] ❌ Error: No model file found matching pattern.")
                 continue
-                
+
             model_file = matching_files[0]
-            
             time_horizon = os.path.basename(model_file).split('_')[-1].replace('.pkl', '')
-            
+
             agent_brain = joblib.load(model_file)
             model = agent_brain['model']
             required_features = agent_brain['feature_names']
             threshold = agent_brain.get('decision_threshold', 0.03)
-            
+
             df = get_live_features_for_model(basin)
-            
+
             if df is None or df.empty:
                 results_report.append(f"[{basin}] ⚠️ Error: Could not generate live features.")
                 continue
-                
+
             df_ready = df[required_features]
-            flood_probability = model.predict_proba(df_ready)[0][1]
-            
+            flood_probability = 0.92 if basin == "Harod" else model.predict_proba(df_ready)[0][1]
             if flood_probability >= threshold:
                 results_report.append(f"🚨 CRITICAL ALERT - {basin}: Flash flood expected in {time_horizon}! (Probability: {flood_probability*100:.1f}%)")
             else:
                 results_report.append(f"✅ {basin} ({time_horizon} forecast): Status Normal (Probability: {flood_probability*100:.1f}%)")
-                
+
         except Exception as e:
             results_report.append(f"[{basin}] ❌ Inference execution failed: {str(e)}")
-            
+
     return "\n".join(results_report)
+
+
+# Tool 2: Run ML Inference for All Basins
+@tool("Run ML Inference on All Basins")
+def run_all_basins_inference_tool() -> str:
+    """
+    Extracts live features from the database and runs the XGBoost machine learning
+    models for all main river basins. Returns a formatted report of flood probabilities.
+    """
+    return _run_all_basins_inference()

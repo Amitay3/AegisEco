@@ -8,6 +8,11 @@ from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from crewai.tools import tool
 import re
+from duckduckgo_search import DDGS
+from datetime import datetime
+from crewai.tools import tool
+from langchain_community.tools import DuckDuckGoSearchResults
+
 try:
     from zoneinfo import ZoneInfo
 except ImportError:
@@ -249,3 +254,29 @@ def sync_flow_data_tool() -> str:
         return f"Success: Fetched and saved {len(live_map_data)} river flow records to the database."
     except Exception as e:
         return f"Error syncing flow data: {str(e)}"
+    
+
+@tool("Search Web and News for Floods")
+def search_flood_news_tool(query: str) -> str:
+    """
+    Searches the open web and news sites for real-time reports of flash floods.
+    Input should be a specific search query (e.g., 'Israel flash flood Harod', 'שיטפון בנחל').
+    """
+    current_date = datetime.now().strftime("%B %Y")
+    enhanced_query = f"{query} {current_date}"
+    
+    try:
+        with DDGS() as ddgs:            
+            results = list(ddgs.text(enhanced_query, max_results=5, timelimit='d'))
+            
+        if not results:
+            return f"No recent news found from the past day for query: '{enhanced_query}'."
+            
+        formatted_results = f"Search Results for '{enhanced_query}' (Past day ONLY):\n"
+        for r in results:
+            formatted_results += f"- Title: {r.get('title')}\n  Snippet: {r.get('body')}\n  Link: {r.get('href')}\n\n"
+            
+        return formatted_results
+        
+    except Exception as e:
+        return f"Error performing search: {str(e)}"

@@ -1,10 +1,9 @@
 import os
 from crewai import Agent, Crew, Process, Task
 from crewai.project import CrewBase, agent, crew, task
-# Import the database and data tools using absolute paths from the root
-from src.crew.tools.db_tools import get_high_rainfall_events, run_all_basins_inference_tool
-from src.crew.tools.data_tools import sync_rain_data_tool, update_forecasts_tool, fetch_ims_warnings_tool, sync_flow_data_tool
-
+from src.crew.tools.db_tools import get_high_rainfall_events, run_all_basins_inference_tool, get_affected_roads_tool
+from src.crew.tools.data_tools import sync_rain_data_tool, update_forecasts_tool, fetch_ims_warnings_tool, sync_flow_data_tool, search_flood_news_tool
+from src.crew.tools.alert_tools import send_telegram_alert_tool
 
 @CrewBase
 class AegisEcoCrew():
@@ -31,15 +30,21 @@ class AegisEcoCrew():
     def flood_analyst(self) -> Agent:
         return Agent(
             config=self.agents_config['flood_analyst'],
-            # החלפנו את כלי השאילתה הפשוט בכלי הלמידת מכונה האמיתי!
             tools=[run_all_basins_inference_tool] 
+        )
+    
+    @agent
+    def osint_analyst(self) -> Agent:
+        return Agent(
+            config=self.agents_config['osint_analyst'],
+            tools=[search_flood_news_tool] 
         )
 
     @agent
     def communications_officer(self) -> Agent:
         return Agent(
             config=self.agents_config['communications_officer'],
-            tools=[]
+            tools=[get_affected_roads_tool, send_telegram_alert_tool]
         )
 
     @task
@@ -57,17 +62,24 @@ class AegisEcoCrew():
         )
 
     @task
-    def alert_task(self) -> Task:
-        return Task(
-            config=self.tasks_config['alert_task'],
-            agent=self.communications_officer()
-        )
-    
-    @task
     def monitor_warnings_task(self) -> Task:
         return Task(
             config=self.tasks_config['monitor_warnings_task'],
             agent=self.warning_monitor()
+        )
+    
+    @task
+    def verify_floods_task(self) -> Task:
+        return Task(
+            config=self.tasks_config['verify_floods_task'],
+            agent=self.osint_analyst()
+        )
+    
+    @task
+    def alert_task(self) -> Task:
+        return Task(
+            config=self.tasks_config['alert_task'],
+            agent=self.communications_officer()
         )
     
     # Main crew that runs all agents
@@ -76,7 +88,14 @@ class AegisEcoCrew():
         """Creates the AegisEco crew"""
         return Crew(
             agents=self.agents,
-            tasks=self.tasks,
+            # EXPLICIT ORDER: This guarantees the workflow follows the right logic!
+            tasks=[
+                self.fetch_and_store_task(),  # 1. Ingest Data
+                self.analyze_risk_task(),     # 2. Run ML Math
+                self.verify_floods_task(),    # 3. Ground-Truth OSINT verification
+                self.monitor_warnings_task(), # 4. Check IMS Warnings
+                self.alert_task()             # 5. Format the final output
+            ],
             process=Process.sequential,
             verbose=True
         )
