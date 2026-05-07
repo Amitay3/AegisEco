@@ -20,12 +20,37 @@ analyze_risk_task:
 
 alert_task:
   description: >
-    Review the output from the flood_analyst. If there are flagged stations, generate a 
-    WARNING message highlighting the locations. If the input says "No anomalies detected", 
-    output a calm "All clear" message.
+    Review the OSINT Ground-Truth Report and the ML Inference Report carefully.
+    Your goal is to determine if a flood alert is necessary, and if so, draft and broadcast an Emergency Message.
+
+    CRITICAL DECISION RULE:
+    - If BOTH reports show "Normal", "All Clear", or no imminent threats: DO NOT use the Telegram tool. Simply output the text "System Normal: No Telegram alert sent."
+    - If EITHER the ML report shows a "CRITICAL ALERT" OR the OSINT report confirms a flood: You MUST use the 'Send Telegram Alert' tool to publish an emergency message.
+
+    Rules for drafting the emergency message (ONLY if triggered):
+    1. EXACT LOCATION: The message MUST clearly state the Basin Name and region right at the top.
+    2. FORMATTING: Use HTML tags for emphasis (e.g., <b>Bold</b> or <i>Italic</i>).
+    3. DETAILS: Include the exact probability from the ML model.
+    4. VERIFICATION: State clearly if the threat is a mathematical prediction, or if it was visually confirmed by the OSINT agent.
+    5. ROADS: For each basin that triggered an alert, you MUST call the 'Get Affected Roads for Basin' tool using the exact main basin name. Include the returned road names in the alert under a clearly labelled section (e.g., <b>⚠️ Affected Roads:</b>). If the tool returns no roads, omit this section.
+    6. ACTION: Suggest immediate safety actions (e.g., "Avoid roads crossing this basin").
   expected_output: >
-    A formatted alert string ready to be printed to the console or sent to Telegram.
+    Either a confirmation that the 'Send Telegram Alert' tool was executed with the emergency message, OR a short text stating "System Normal: No Telegram alert sent."
   agent: communications_officer
+  
+verify_floods_task:
+  description: >
+    Review the ML Inference Report produced by the Hydrological Analyst. 
+    Use the 'Search Web and News for Floods' tool to look for recent real-world reports.
+    
+    CRITICAL TIME RULE: You must strictly verify the dates of the search results. 
+    Ignore any news snippets, articles, or reports that are from previous years (e.g., 2023, 2024, 2025) or previous months. 
+    If a snippet talks about a past date, explicitly state "Found reports, but they are outdated."
+    
+    If no fresh alerts were triggered, do a general search just in case the model missed something.
+  expected_output: >
+    A Ground-Truth Verification Report detailing only FRESH, CURRENT real-world news confirming the floods, or a clear statement that no human reports have been sighted today.
+  agent: osint_analyst
 
 monitor_warnings_task:
   description: >
@@ -55,4 +80,6 @@ monitor_warnings_task:
   expected_output: >
     A strict string block using Markdown headers (# for Date, ## for Color and Type), with each warning structured clearly and separated by an empty line.
   agent: warning_monitor
+
+
 

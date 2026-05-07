@@ -22,6 +22,8 @@ sys.path.append(base_dir)
 os.environ["LITELLM_LOCAL_MODEL_COST_MAP"] = "True"
 
 from src.crew.aegiseco_crew import AegisEcoCrew
+from src.crew.tools.db_tools import _run_all_basins_inference
+from src.crew.tools.alert_tools import _send_telegram
 
 last_sigint_time = 0
 scheduler = BackgroundScheduler()
@@ -74,12 +76,30 @@ def run_system_cycle(mode="full"):
             
         except Exception as e:
             error_msg = str(e)
+            print(error_msg)
             print(f"\nAttempt {attempt} Failed: {error_msg[:150]}...")
             if attempt < len(models_to_try):
                 print(f"Model failure detected. Switching to backup model: {models_to_try[attempt_idx + 1]}...")
                 time.sleep(2)
             else:
                 print("All models failed. System cycle aborted.")
+
+    if result is None and mode == "full":
+        print("\n--- Running rule-based failsafe check ---")
+        try:
+            report = _run_all_basins_inference()
+            print(report)
+            if "CRITICAL ALERT" in report:
+                msg = (
+                    "⚠️ <b>[FAILSAFE ALERT]</b> AegisEco AI agents are currently unavailable.\n"
+                    "Direct ML inference has detected a flood risk:\n\n"
+                    f"{report}"
+                )
+                print(_send_telegram(msg))
+            else:
+                print("Failsafe check complete: No critical flood risk detected.")
+        except Exception as fe:
+            print(f"Failsafe check failed: {fe}")
 
 def print_next_run_time(event=None):
     now = datetime.now()
