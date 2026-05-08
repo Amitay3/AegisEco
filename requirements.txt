@@ -24,6 +24,7 @@ matplotlib
 
 # Database
 psycopg2-binary
+sqlalchemy
 
 # Environment and Web
 python-dotenv==1.1.1
@@ -32,3 +33,6 @@ duckduckgo-search
 
 # Scheduling
 apscheduler
+
+# Web Framework
+streamlit
