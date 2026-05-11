@@ -30,6 +30,8 @@ sqlalchemy
 python-dotenv==1.1.1
 requests
 duckduckgo-search
+feedparser
+telethon
 
 # Scheduling
 apscheduler

@@ -2,7 +2,7 @@ import os
 from crewai import Agent, Crew, Process, Task
 from crewai.project import CrewBase, agent, crew, task
 from src.crew.tools.db_tools import get_high_rainfall_events, run_all_basins_inference_tool, get_affected_roads_tool
-from src.crew.tools.data_tools import sync_rain_data_tool, update_forecasts_tool, fetch_ims_warnings_tool, sync_flow_data_tool, search_flood_news_tool
+from src.crew.tools.data_tools import sync_rain_data_tool, update_forecasts_tool, fetch_ims_warnings_tool, sync_flow_data_tool, search_flood_news_tool, search_israeli_rss_tool, search_telegram_channels_tool
 from src.crew.tools.alert_tools import send_telegram_alert_tool
 
 @CrewBase
@@ -37,7 +37,21 @@ class AegisEcoCrew():
     def osint_analyst(self) -> Agent:
         return Agent(
             config=self.agents_config['osint_analyst'],
-            tools=[search_flood_news_tool] 
+            tools=[search_flood_news_tool]
+        )
+
+    @agent
+    def rss_analyst(self) -> Agent:
+        return Agent(
+            config=self.agents_config['rss_analyst'],
+            tools=[search_israeli_rss_tool]
+        )
+
+    @agent
+    def telegram_analyst(self) -> Agent:
+        return Agent(
+            config=self.agents_config['telegram_analyst'],
+            tools=[search_telegram_channels_tool]
         )
 
     @agent
@@ -74,6 +88,20 @@ class AegisEcoCrew():
             config=self.tasks_config['verify_floods_task'],
             agent=self.osint_analyst()
         )
+
+    @task
+    def verify_rss_task(self) -> Task:
+        return Task(
+            config=self.tasks_config['verify_rss_task'],
+            agent=self.rss_analyst()
+        )
+
+    @task
+    def verify_telegram_task(self) -> Task:
+        return Task(
+            config=self.tasks_config['verify_telegram_task'],
+            agent=self.telegram_analyst()
+        )
     
     @task
     def alert_task(self) -> Task:
@@ -90,11 +118,13 @@ class AegisEcoCrew():
             agents=self.agents,
             # EXPLICIT ORDER: This guarantees the workflow follows the right logic!
             tasks=[
-                self.fetch_and_store_task(),  # 1. Ingest Data
-                self.analyze_risk_task(),     # 2. Run ML Math
-                self.verify_floods_task(),    # 3. Ground-Truth OSINT verification
-                self.monitor_warnings_task(), # 4. Check IMS Warnings
-                self.alert_task()             # 5. Format the final output
+                self.fetch_and_store_task(),   # 1. Ingest Data
+                self.analyze_risk_task(),      # 2. Run ML Inference
+                self.verify_floods_task(),     # 3. DuckDuckGo OSINT
+                self.verify_rss_task(),        # 4. Israeli News RSS
+                self.verify_telegram_task(),   # 5. Telegram Emergency Channels
+                self.monitor_warnings_task(),  # 6. IMS Warnings
+                self.alert_task()              # 7. Send Alert
             ],
             process=Process.sequential,
             verbose=True

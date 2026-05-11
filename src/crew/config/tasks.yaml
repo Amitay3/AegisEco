@@ -38,6 +38,37 @@ alert_task:
     Either a confirmation that the 'Send Telegram Alert' tool was executed with the emergency message, OR a short text stating "System Normal: No Telegram alert sent."
   agent: communications_officer
   
+verify_rss_task:
+  description: >
+    Use the 'Search Israeli News RSS Feeds' tool to scan Ynet, Walla, Mako, and Times of Israel
+    for flood-related articles published in the last 24 hours.
+
+    CRITICAL TIME RULE: Only report articles that are genuinely from today. If the article
+    date is from a previous day, explicitly state it is outdated and discard it.
+
+    Report each article with its source, headline, and link. If nothing is found, state clearly
+    that no flood coverage was found in Israeli news feeds today.
+  expected_output: >
+    A structured list of fresh Israeli news articles mentioning floods, with source, title, and link.
+    Or a clear statement that no relevant articles were found in the past 24 hours.
+  agent: rss_analyst
+
+verify_telegram_task:
+  description: >
+    Use the 'Search Telegram Emergency Channels' tool to check public Israeli emergency
+    Telegram channels for flood-related messages posted in the last 24 hours.
+
+    Focus on messages from official channels (IDF Home Front Command, Magen David Adom)
+    and weather alert channels. Only report messages that indicate an ACTIVE or IMMINENT
+    flood threat — not weather forecasts or historical posts.
+
+    If the tool returns a session error, report that Telegram monitoring is unavailable
+    and continue without it.
+  expected_output: >
+    A list of relevant Telegram messages with channel name, time, and content.
+    Or a clear statement that no active flood alerts were found in monitored channels.
+  agent: telegram_analyst
+
 verify_floods_task:
   description: >
     Review the ML Inference Report produced by the Hydrological Analyst. 
