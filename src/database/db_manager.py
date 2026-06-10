@@ -141,17 +141,21 @@ def fetch_feb_records():
     save_ims_batch_to_db(feb_records)
 
 
-def get_live_features_for_model(basin_name: str) -> pd.DataFrame:
-    cutoff_time = datetime.now() - timedelta(days=8)
+def get_live_features_for_model(basin_name: str, reference_time: datetime = None) -> pd.DataFrame:
+    if reference_time is None:
+        reference_time = datetime.now()
+    cutoff_time = reference_time - timedelta(days=8)
     
     query = """
-        SELECT * FROM raw_hourly_basin_data 
-        WHERE basin_name = %(basin_name)s AND measurement_time >= %(cutoff_time)s
+        SELECT * FROM raw_hourly_basin_data
+        WHERE basin_name = %(basin_name)s
+          AND measurement_time >= %(cutoff_time)s
+          AND measurement_time <= %(reference_time)s
         ORDER BY measurement_time ASC;
     """
-    
+
     conn = psycopg2.connect(DATABASE_URL)
-    df = pd.read_sql(query, conn, params={"basin_name": basin_name, "cutoff_time": cutoff_time})
+    df = pd.read_sql(query, conn, params={"basin_name": basin_name, "cutoff_time": cutoff_time, "reference_time": reference_time})
     conn.close()
 
     if df.empty:
@@ -162,7 +166,14 @@ def get_live_features_for_model(basin_name: str) -> pd.DataFrame:
     df.set_index('measurement_time', inplace=True)
     
 
-    latest_time = df.index.max()
+    ref_ts = pd.Timestamp(reference_time)
+    db_latest = df.index.max()
+    # Align timezone-awareness so the comparison doesn't raise
+    if db_latest.tzinfo is None and ref_ts.tzinfo is not None:
+        ref_ts = ref_ts.tz_localize(None)
+    elif db_latest.tzinfo is not None and ref_ts.tzinfo is None:
+        ref_ts = ref_ts.tz_localize(db_latest.tzinfo)
+    latest_time = min(db_latest, ref_ts)
     full_time_grid = pd.date_range(end=latest_time, periods=192, freq='h')
     
     df = df.reindex(full_time_grid)

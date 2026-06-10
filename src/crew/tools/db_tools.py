@@ -90,7 +90,7 @@ def get_affected_roads_tool(main_basin_name: str) -> str:
         if 'conn' in locals(): conn.close()
 
 
-def _run_all_basins_inference() -> str:
+def _run_all_basins_inference(reference_time=None) -> str:
     """Run XGBoost inference for all basins and return a formatted report. Callable without the CrewAI wrapper."""
     basins_with_models = ["Beer Sheva", "Harod", "Sorek", "Alexander", "Ayalon", "Dishon", "Gerar", "Hadera", "Keziv", "Kishon", "Lachish", "Paran", "Shikma", "Taninim", "Yarkon", "Zin"]
     results_report = ["📊 AegisEco ML Inference Report:\n"]
@@ -115,14 +115,14 @@ def _run_all_basins_inference() -> str:
             required_features = agent_brain['feature_names']
             threshold = agent_brain.get('decision_threshold', 0.03)
 
-            df = get_live_features_for_model(basin)
+            df = get_live_features_for_model(basin, reference_time=reference_time)
 
             if df is None or df.empty:
                 results_report.append(f"[{basin}] ⚠️ Error: Could not generate live features.")
                 continue
 
             df_ready = df[required_features]
-            flood_probability = 0.92 if basin == "Harod" else model.predict_proba(df_ready)[0][1]
+            flood_probability = model.predict_proba(df_ready)[0][1]
             if flood_probability >= threshold:
                 results_report.append(f"🚨 CRITICAL ALERT - {basin}: Flash flood expected in {time_horizon}! (Probability: {flood_probability*100:.1f}%)")
             else:

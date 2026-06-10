@@ -6,7 +6,7 @@ from datetime import datetime
 # ==========================================
 # 1. Load the new model (Classification)
 # ==========================================
-MODEL_FILE = r'../ready models/model_harod_flood_1h.pkl'
+MODEL_FILE = r'../models/model_sorek_flood_1h.pkl'
 print(f"Waking up AI Agent from {MODEL_FILE}...")
 
 agent_brain        = joblib.load(MODEL_FILE)
@@ -38,14 +38,14 @@ live_data = {
     'Basin_Intensity_Mean': 10.0,
 
     # Getting really close to the threshold (Orange alert)
-    'Flow_lag1h':           3.5,    
-    'Flow_lag2h':           3.2,    
+    'Flow_lag1h':           6.0,    
+    'Flow_lag2h':           5.5,    
     'Flow_lag3h':           0.4,    
     'Flow_lag6h':           0.1,
     'Flow_lag12h':          0.0,
     'Flow_lag24h':          0.0,
     # Sharp rising rate of 1.7 m3/s per hour
-    'Flow_Rate_of_Change':  1.7,    
+    'Flow_Rate_of_Change':  2.5,    
     'Flow_Is_Active':       1,
 
     # --- Wet winter soil ---

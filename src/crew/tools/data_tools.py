@@ -256,6 +256,118 @@ def sync_flow_data_tool() -> str:
         return f"Error syncing flow data: {str(e)}"
     
 
+@tool("Search Israeli News RSS Feeds")
+def search_israeli_rss_tool() -> str:
+    """
+    Fetches and searches major Israeli news RSS feeds (Ynet, Walla, Mako, N12, Times of Israel)
+    for flash flood reports published in the last 24 hours.
+    No input required — searches all feeds automatically.
+    """
+    import feedparser
+
+    FEEDS = {
+        "Ynet":             "https://www.ynet.co.il/Integration/StoryRss2.xml",
+        "Walla":            "https://rss.walla.co.il/feed/1",
+        "Mako (Ch12)":      "https://rss.mako.co.il/rss/News-n.xml",
+        "Times of Israel":  "https://www.timesofisrael.com/feed/",
+    }
+
+    FLOOD_KEYWORDS = [
+        "שיטפון", "שיטפונות", "הצפה", "הצפות", "נחל", "ניקוז",
+        "flood", "flash flood", "flooding", "wadi", "overflow",
+        "גשם", "עדשת מים", "נגר", "מי גשם"
+    ]
+
+    cutoff = datetime.now() - timedelta(hours=24)
+    found = []
+
+    for source, url in FEEDS.items():
+        try:
+            feed = feedparser.parse(url)
+            for entry in feed.entries:
+                title = entry.get("title", "")
+                summary = entry.get("summary", "")
+                text = (title + " " + summary).lower()
+
+                if not any(kw.lower() in text for kw in FLOOD_KEYWORDS):
+                    continue
+
+                published = entry.get("published_parsed")
+                if published:
+                    pub_dt = datetime(*published[:6])
+                    if pub_dt < cutoff:
+                        continue
+
+                link = entry.get("link", "")
+                found.append(f"[{source}] {title}\n  {link}")
+
+        except Exception as e:
+            found.append(f"[{source}] Error fetching feed: {e}")
+
+    if not found:
+        return "No flood-related articles found in Israeli news RSS feeds in the past 24 hours."
+
+    return f"Found {len(found)} flood-related article(s) in Israeli news feeds:\n\n" + "\n\n".join(found)
+
+
+@tool("Search Telegram Emergency Channels")
+def search_telegram_channels_tool() -> str:
+    """
+    Searches public Israeli Telegram emergency channels for flood-related messages
+    posted in the last 24 hours. Requires TELEGRAM_API_ID, TELEGRAM_API_HASH,
+    and an authenticated session file (run scripts/setup_telegram_session.py once).
+    """
+    from telethon.sync import TelegramClient
+
+    api_id = os.getenv("TELEGRAM_API_ID")
+    api_hash = os.getenv("TELEGRAM_API_HASH")
+
+    if not api_id or not api_hash:
+        return "Error: TELEGRAM_API_ID or TELEGRAM_API_HASH missing from environment."
+
+    CHANNELS = [
+        "pikud_haoref",      # IDF Home Front Command
+        "mdais",             # Magen David Adom
+        "meteo_tech",        # MeteoTech weather alerts
+        "rainil",            # Rain alerts Israel
+    ]
+
+    FLOOD_KEYWORDS = [
+        "שיטפון", "הצפה", "נחל", "גשם חזק", "אזהרה", "סכנה",
+        "flood", "flash flood", "wadi", "alert", "warning"
+    ]
+
+    session_path = os.path.join(os.getcwd(), "aegiseco_telegram")
+    cutoff = datetime.now() - timedelta(hours=24)
+    results = []
+
+    try:
+        with TelegramClient(session_path, int(api_id), api_hash) as client:
+            for channel in CHANNELS:
+                try:
+                    messages = client.get_messages(channel, limit=100)
+                    for msg in messages:
+                        if not msg.date or not msg.text:
+                            continue
+                        msg_time = msg.date.replace(tzinfo=None)
+                        if msg_time < cutoff:
+                            continue
+                        if any(kw.lower() in msg.text.lower() for kw in FLOOD_KEYWORDS):
+                            results.append(
+                                f"[@{channel} | {msg_time.strftime('%H:%M')}]\n{msg.text[:300]}"
+                            )
+                except Exception as e:
+                    results.append(f"[@{channel}] Could not fetch: {e}")
+
+    except Exception as e:
+        return f"Telegram client error: {e}. Run scripts/setup_telegram_session.py to authenticate."
+
+    if not results:
+        return "No flood-related messages found in Telegram emergency channels in the past 24 hours."
+
+    return f"Found {len(results)} flood-related Telegram message(s):\n\n" + "\n\n".join(results)
+
+
 @tool("Search Web and News for Floods")
 def search_flood_news_tool(query: str) -> str:
     """
