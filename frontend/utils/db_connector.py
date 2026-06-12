@@ -1,28 +1,38 @@
 import streamlit as st
-import psycopg2
 import pandas as pd
+from sqlalchemy import create_engine
+import time
 
-@st.cache_resource
-def init_connection():
-    """
-    Initializes and caches the database connection.
-    Sets autocommit to True to prevent transaction block errors.
-    """
-    conn = psycopg2.connect(st.secrets["DATABASE_URL"])
-    conn.autocommit = True
-    return conn
+db_url = st.secrets["DATABASE_URL"].replace("postgres://", "postgresql://")
+engine = create_engine(db_url, pool_pre_ping=True, pool_recycle=300)
 
-@st.cache_data(ttl=700) 
-def run_query(query: str):
-    """
-    Runs a SELECT SQL query and returns the results as a Pandas DataFrame.
-    The results are cached for 10 minutes (700 seconds) to avoid overloading the DB.
-    """
-    with init_connection().cursor() as cur:
-        cur.execute(query)
-        # Fetch the column names from the cursor description
-        colnames = [desc[0] for desc in cur.description]
-        # Fetch all rows
-        data = cur.fetchall()
-        # Convert to a DataFrame for easy display in Streamlit
-        return pd.DataFrame(data, columns=colnames)
+def run_query(query: str, retries: int = 3) -> pd.DataFrame:
+    if 'db_offline_since' not in st.session_state:
+        st.session_state.db_offline_since = None
+    if 'last_successful_update' not in st.session_state:
+        st.session_state.last_successful_update = time.strftime('%H:%M')
+
+    attempt = 0
+    while attempt < retries:
+        try:
+            df = pd.read_sql(query, engine)
+            
+            # Connection is active, update timestamps
+            st.session_state.last_successful_update = time.strftime('%H:%M')
+            st.session_state.db_offline_since = None
+                
+            return df
+            
+        except Exception as e:
+            attempt += 1
+            engine.dispose()
+            
+            if attempt < retries:
+                time.sleep(2)
+                continue
+            else:
+                if st.session_state.db_offline_since is None:
+                    st.session_state.db_offline_since = time.time()
+                    
+                print(f"DB Error: {e}")
+                return pd.DataFrame()

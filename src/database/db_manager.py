@@ -1,4 +1,5 @@
 import os
+from litellm import query
 import numpy as np
 from datetime import datetime
 import pandas as pd
@@ -7,6 +8,8 @@ from psycopg2.extras import execute_values
 from dotenv import load_dotenv
 from datetime import datetime, timedelta
 from src.data_sentinel.ims_client import get_all_latest_rain_records, get_february_data_all_stations
+from sqlalchemy import create_engine
+
 load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -153,10 +156,10 @@ def get_live_features_for_model(basin_name: str, reference_time: datetime = None
           AND measurement_time <= %(reference_time)s
         ORDER BY measurement_time ASC;
     """
-
-    conn = psycopg2.connect(DATABASE_URL)
-    df = pd.read_sql(query, conn, params={"basin_name": basin_name, "cutoff_time": cutoff_time, "reference_time": reference_time})
-    conn.close()
+    
+    safe_db_url = DATABASE_URL.replace("postgres://", "postgresql://")
+    engine = create_engine(safe_db_url, pool_pre_ping=True)
+    df = pd.read_sql(query, engine, params={"basin_name": basin_name, "cutoff_time": cutoff_time, "reference_time": reference_time})
 
     if df.empty:
         print(f"No data at all for {basin_name}. Cannot run.")

@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from crewai.tools import tool
 import re
-from duckduckgo_search import DDGS
+from ddgs import DDGS
 from datetime import datetime
 from crewai.tools import tool
 from langchain_community.tools import DuckDuckGoSearchResults

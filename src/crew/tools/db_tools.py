@@ -91,48 +91,89 @@ def get_affected_roads_tool(main_basin_name: str) -> str:
 
 
 def _run_all_basins_inference(reference_time=None) -> str:
-    """Run XGBoost inference for all basins and return a formatted report. Callable without the CrewAI wrapper."""
+    """
+    Run XGBoost inference for all basins, update the main_basins_status 
+    table in the database, and return a formatted report.
+    """
     basins_with_models = ["Beer Sheva", "Harod", "Sorek", "Alexander", "Ayalon", "Dishon", "Gerar", "Hadera", "Keziv", "Kishon", "Lachish", "Paran", "Shikma", "Taninim", "Yarkon", "Zin"]
     results_report = ["📊 AegisEco ML Inference Report:\n"]
 
     models_dir = os.path.join(os.getcwd(), "models", "models")
+    
+    # Establish database connection
+    db_url = os.getenv("DATABASE_URL")
+    conn = None
+    cursor = None
+    
+    try:
+        conn = psycopg2.connect(db_url)
+        conn.autocommit = True
+        cursor = conn.cursor()
+    except Exception as e:
+        return f"❌ Critical Database Error: Could not connect to update status. {e}"
 
-    for basin in basins_with_models:
-        try:
-            file_basin_name = basin.lower().replace(' ', '_')
-            search_pattern = os.path.join(models_dir, f'model_{file_basin_name}_flood_*.pkl')
-            matching_files = glob.glob(search_pattern)
+    try:
+        for basin in basins_with_models:
+            try:
+                file_basin_name = basin.lower().replace(' ', '_')
+                search_pattern = os.path.join(models_dir, f'model_{file_basin_name}_flood_*.pkl')
+                matching_files = glob.glob(search_pattern)
 
-            if not matching_files:
-                results_report.append(f"[{basin}] ❌ Error: No model file found matching pattern.")
-                continue
+                if not matching_files:
+                    results_report.append(f"[{basin}] ❌ Error: No model file found matching pattern.")
+                    continue
 
-            model_file = matching_files[0]
-            time_horizon = os.path.basename(model_file).split('_')[-1].replace('.pkl', '')
+                model_file = matching_files[0]
+                time_horizon = os.path.basename(model_file).split('_')[-1].replace('.pkl', '')
 
-            agent_brain = joblib.load(model_file)
-            model = agent_brain['model']
-            required_features = agent_brain['feature_names']
-            threshold = agent_brain.get('decision_threshold', 0.03)
+                agent_brain = joblib.load(model_file)
+                model = agent_brain['model']
+                required_features = agent_brain['feature_names']
+                threshold = agent_brain.get('decision_threshold', 0.03)
 
-            df = get_live_features_for_model(basin, reference_time=reference_time)
+                # Pass the reference_time parameter correctly to the feature extractor
+                df = get_live_features_for_model(basin, reference_time=reference_time)
 
-            if df is None or df.empty:
-                results_report.append(f"[{basin}] ⚠️ Error: Could not generate live features.")
-                continue
+                if df is None or df.empty:
+                    results_report.append(f"[{basin}] ⚠️ Error: Could not generate live features.")
+                    continue
 
-            df_ready = df[required_features]
-            flood_probability = model.predict_proba(df_ready)[0][1]
-            if flood_probability >= threshold:
-                results_report.append(f"🚨 CRITICAL ALERT - {basin}: Flash flood expected in {time_horizon}! (Probability: {flood_probability*100:.1f}%)")
-            else:
-                results_report.append(f"✅ {basin} ({time_horizon} forecast): Status Normal (Probability: {flood_probability*100:.1f}%)")
+                # Filter dataframe to match exactly what the model expects
+                df_ready = df[required_features]
+                flood_probability = model.predict_proba(df_ready)[0][1]
+                
+                # Determine alert status
+                has_alert = bool(flood_probability >= threshold)
+                probability_pct = float(flood_probability * 100)
+                
+                # Update the database with the latest inference results
+                update_query = """
+                    UPDATE main_basins_status 
+                    SET has_flood_alert = %s, 
+                        flood_probability = %s, 
+                        last_inference_time = CURRENT_TIMESTAMP
+                    WHERE main_basin_name = %s;
+                """
+                cursor.execute(update_query, (has_alert, probability_pct, basin))
 
-        except Exception as e:
-            results_report.append(f"[{basin}] ❌ Inference execution failed: {str(e)}")
+                # Format report output
+                if has_alert:
+                    results_report.append(f"🚨 CRITICAL ALERT - {basin}: Flash flood expected in {time_horizon}! (Probability: {probability_pct:.1f}%)")
+                else:
+                    results_report.append(f"✅ {basin} ({time_horizon} forecast): Status Normal (Probability: {probability_pct:.1f}%)")
+
+            except Exception as e:
+                # Reverted to clean error message
+                results_report.append(f"[{basin}] ❌ Inference execution failed: {str(e)}")
+                
+    finally:
+        # Ensure database connections are always closed
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
 
     return "\n".join(results_report)
-
 
 # Tool 2: Run ML Inference for All Basins
 @tool("Run ML Inference on All Basins")
