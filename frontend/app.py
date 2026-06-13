@@ -1,9 +1,28 @@
 import streamlit as st
 import os
-import time 
+import time
+from datetime import datetime
 from utils.db_connector import run_query
 from utils.permissions import has_access
 from components.risk_map import render_risk_map
+
+
+def _format_relative_time(ts):
+    """Formats a UTC timestamp from the DB as a short 'time ago' string."""
+    try:
+        ts = ts.to_pydatetime()
+    except AttributeError:
+        pass
+
+    delta_seconds = (datetime.utcnow() - ts).total_seconds()
+    if delta_seconds < 60:
+        return "just now"
+    if delta_seconds < 3600:
+        return f"{int(delta_seconds // 60)} min ago"
+    if delta_seconds < 86400:
+        return f"{int(delta_seconds // 3600)}h ago"
+    return f"{int(delta_seconds // 86400)}d ago"
+
 
 # Calculate the exact absolute path to the images
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -62,6 +81,21 @@ st.markdown("""
         70% { box-shadow: 0 0 0 15px rgba(220, 53, 69, 0); }
         100% { box-shadow: 0 0 0 0 rgba(220, 53, 69, 0); }
     }
+    .agent-meta {
+        color: #6c757d;
+        font-size: 0.8rem;
+    }
+    .agent-status-badge {
+        display: inline-block;
+        float: right;
+        font-size: 0.65rem;
+        font-weight: 700;
+        letter-spacing: 1.5px;
+        padding: 3px 10px;
+        border-radius: 999px;
+        border: 1px solid;
+        white-space: nowrap;
+    }
     </style>
     """, unsafe_allow_html=True)
 
@@ -82,14 +116,14 @@ if 'selected_city' not in st.session_state:
 with st.sidebar:
     st.image(logo_path, use_container_width=True)
     st.divider()
-    
+
     st.header("System Settings")
     user_role = st.selectbox(
         "Select User Role:",
         ["Citizen", "City", "Authority"],
         help="Change access level to view different system modules"
     )
-    
+
     # Contextual input for City role
     if user_role == "City":
         st.write("Municipality Configuration")
@@ -104,7 +138,7 @@ with st.sidebar:
     else:
         # Clear the specific city context if role changes
         st.session_state.selected_city = None
-    
+
     st.sidebar.divider()
     st.sidebar.info(f"Connected as: {user_role}")
 
@@ -114,8 +148,8 @@ try:
     cache_buster = int(time.time() // 30)
     banner_query = f"""
         /* Cache Buster: {cache_buster} */
-        SELECT main_basin_name 
-        FROM main_basins_status 
+        SELECT main_basin_name
+        FROM main_basins_status
         WHERE has_flood_alert = TRUE;
     """
     banner_df = run_query(banner_query)
@@ -127,7 +161,7 @@ except Exception as e:
 if alert_basins:
     basins_str = ", ".join(alert_basins)
     st.markdown(
-        f'<div class="main-status-box status-danger">FLOOD DANGER DETECTED IN: {basins_str.upper()}<div class="danger-subtext">EMERGENCY PROTOCOLS ACTIVE</div></div>', 
+        f'<div class="main-status-box status-danger">FLOOD DANGER DETECTED IN: {basins_str.upper()}<div class="danger-subtext">EMERGENCY PROTOCOLS ACTIVE</div></div>',
         unsafe_allow_html=True
     )
 else:
@@ -146,12 +180,12 @@ if st.session_state.db_offline_since is not None:
 
 if is_stale:
     st.markdown(
-        f'<div class="connection-badge conn-offline">SYSTEM OFFLINE - CONNECTION ISSUES - LAST UPDATE {st.session_state.last_successful_update}</div>', 
+        f'<div class="connection-badge conn-offline">SYSTEM OFFLINE - CONNECTION ISSUES - LAST UPDATE {st.session_state.last_successful_update}</div>',
         unsafe_allow_html=True
     )
 else:
     st.markdown(
-        f'<div class="connection-badge conn-online">SYSTEM ONLINE - LAST UPDATE {st.session_state.last_successful_update}</div>', 
+        f'<div class="connection-badge conn-online">SYSTEM ONLINE - LAST UPDATE {st.session_state.last_successful_update}</div>',
         unsafe_allow_html=True
     )
 
@@ -181,10 +215,10 @@ if has_access(user_role, "view_risk_map"):
 if has_access(user_role, "view_city_dashboard"):
     with tabs[tab_index]:
         st.subheader("City Level Dashboard")
-        
+
         # Determine which city to display based on user role and state
         active_city = None
-        
+
         if user_role == "City":
             if st.session_state.selected_city:
                 active_city = st.session_state.selected_city
@@ -205,30 +239,30 @@ if has_access(user_role, "view_city_dashboard"):
         st.divider()
 
         if active_city:
-            safe_city_name = active_city.replace("'", "''") 
+            safe_city_name = active_city.replace("'", "''")
             try:
                 city_data_query = f"""
-                    SELECT 
-                        s.name_eng, 
-                        s.current_6h_forecast, 
+                    SELECT
+                        s.name_eng,
+                        s.current_6h_forecast,
                         s.next_6h_forecast,
                         m.has_flood_alert
                     FROM settlements s
                     LEFT JOIN basins b ON s.basin_name = b.basin_name
                     LEFT JOIN main_basins_status m ON b.main_basin_name = m.main_basin_name
-                    WHERE s.name_eng = '{safe_city_name}' 
+                    WHERE s.name_eng = '{safe_city_name}'
                     LIMIT 1;
                 """
                 city_df = run_query(city_data_query)
 
                 if not city_df.empty:
                     city_row = city_df.iloc[0]
-                    
+
                     st.markdown(f"### Status for **{city_row['name_eng']}**")
-                    
+
                     # 1. Display Alert Status First
                     has_local_alert = city_row.get('has_flood_alert', False) == True
-                    
+
                     if has_local_alert:
                         st.error(f"ACTIVE FLOOD WARNING FOR {city_row['name_eng'].upper()} AREA")
                         st.warning(
@@ -239,12 +273,12 @@ if has_access(user_role, "view_city_dashboard"):
                         )
                     else:
                         st.success(f"NO FLOOD ALERT. Conditions are optimal for {city_row['name_eng']}.")
-                        
-                    st.write("") 
-                    
+
+                    st.write("")
+
                     # 2. Conditional Forecast Display
                     has_forecast = city_row['current_6h_forecast'] != -1 and city_row['next_6h_forecast'] != -1
-                    
+
                     if has_forecast:
                         col1, col2 = st.columns(2)
                         with col1:
@@ -253,7 +287,7 @@ if has_access(user_role, "view_city_dashboard"):
                             st.metric(label="Next 6H Forecast (mm)", value=city_row['next_6h_forecast'])
                     else:
                         st.info("No 6-hour forecast data available for this municipality.")
-                        
+
             except Exception as e:
                 st.error(f"Error loading data for {active_city}: {e}")
 
@@ -265,7 +299,7 @@ if has_access(user_role, "view_basins_data"):
         st.subheader("Regional Councils Registry")
         st.write("Live data from the 'councils' database table:")
         try:
-            councils_df = run_query("SELECT * FROM councils;") 
+            councils_df = run_query("SELECT * FROM councils;")
             st.dataframe(councils_df, use_container_width=True)
         except Exception as e:
             st.error(f"Error fetching data: {e}")
@@ -284,7 +318,75 @@ if has_access(user_role, "view_system_logs"):
 # --- TAB: SOCIAL UPDATES ---
 if has_access(user_role, "view_social_feed"):
     with tabs[tab_index]:
-        st.subheader("Social Media Monitoring")
-        st.write("Aggregated reports from Twitter and Facebook:")
-        st.warning("Social listening agents are currently inactive.")
+        st.subheader("Social & Field Intelligence")
+        st.write("Live check-ins from the verification agents — what each one looked at, and what it found.")
+
+        try:
+            updates_df = run_query("""
+                SELECT DISTINCT ON (agent_name)
+                    agent_name, source_type, status, summary, details, created_at
+                FROM social_updates
+                ORDER BY agent_name, created_at DESC;
+            """)
+        except Exception:
+            updates_df = None
+
+        if updates_df is None or updates_df.empty:
+            st.info("No agent activity yet. Once the agent pipeline runs, each agent's latest "
+                    "check-in (OSINT, RSS, Telegram, IMS Warnings) will appear here.")
+        else:
+            AGENT_ORDER = ["OSINT Analyst", "RSS Analyst", "Telegram Analyst", "Warnings Monitor"]
+            AGENT_ICONS = {
+                "OSINT Analyst": "🔍",
+                "RSS Analyst": "📰",
+                "Telegram Analyst": "📡",
+                "Warnings Monitor": "⚠️",
+            }
+            STATUS_STYLES = {
+                "findings": ("FINDINGS", "#fd7e14"),
+                "no_findings": ("ALL CLEAR", "#28a745"),
+                "error": ("UNAVAILABLE", "#dc3545"),
+            }
+
+            updates_df["sort_order"] = updates_df["agent_name"].apply(
+                lambda a: AGENT_ORDER.index(a) if a in AGENT_ORDER else len(AGENT_ORDER)
+            )
+            updates_df = updates_df.sort_values("sort_order")
+
+            for _, row in updates_df.iterrows():
+                icon = AGENT_ICONS.get(row["agent_name"], "🤖")
+                badge_label, badge_color = STATUS_STYLES.get(row["status"], ("UPDATE", "#6c757d"))
+                time_str = _format_relative_time(row["created_at"])
+
+                with st.container(border=True):
+                    head_col1, head_col2 = st.columns([5, 1])
+                    with head_col1:
+                        st.markdown(
+                            f"**{icon} {row['agent_name']}** &nbsp;·&nbsp; <span class='agent-meta'>{time_str}</span>",
+                            unsafe_allow_html=True
+                        )
+                    with head_col2:
+                        st.markdown(
+                            f'<span class="agent-status-badge" style="color:{badge_color}; border-color:{badge_color};">{badge_label}</span>',
+                            unsafe_allow_html=True
+                        )
+
+                    st.write(row["summary"])
+
+                    details = row["details"]
+                    if details:
+                        with st.expander(f"View {len(details)} item(s)"):
+                            for item in details:
+                                source_type = row["source_type"]
+                                if source_type in ("rss", "osint"):
+                                    title = item.get("title", "Untitled")
+                                    url = item.get("url")
+                                    if url:
+                                        st.markdown(f"- [{title}]({url})")
+                                    else:
+                                        st.markdown(f"- {title}")
+                                elif source_type == "telegram":
+                                    st.markdown(f"- **@{item.get('channel')}** ({item.get('time')}): {item.get('text')}")
+                                elif source_type == "ims_warning":
+                                    st.markdown(f"- **{item.get('title')}** — {item.get('description')}")
     tab_index += 1

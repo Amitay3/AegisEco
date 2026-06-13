@@ -4,7 +4,7 @@ import numpy as np
 from datetime import datetime
 import pandas as pd
 import psycopg2
-from psycopg2.extras import execute_values
+from psycopg2.extras import execute_values, Json
 from dotenv import load_dotenv
 from datetime import datetime, timedelta
 from src.data_sentinel.ims_client import get_all_latest_rain_records, get_february_data_all_stations
@@ -87,6 +87,39 @@ def save_ims_batch_to_db(records: list):
 
     except Exception as e:
         print(f"Database Error during save: {e}")
+        if 'conn' in locals() and conn:
+            conn.rollback()
+    finally:
+        if 'cursor' in locals():
+            cursor.close()
+        if 'conn' in locals() and conn:
+            conn.close()
+
+def save_social_update_to_db(agent_name: str, source_type: str, status: str, summary: str, details: list = None):
+    """
+    Records one "activity" row for an intel-gathering agent (RSS, Telegram,
+    OSINT, Warnings Monitor) so the dashboard's Social Updates feed can show
+    what each agent last did, even when nothing was found.
+    """
+    db_url = os.getenv("DATABASE_URL")
+    if not db_url:
+        print("Error: DATABASE_URL not found in environment.")
+        return
+
+    try:
+        conn = psycopg2.connect(db_url)
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            INSERT INTO social_updates (agent_name, source_type, status, summary, details)
+            VALUES (%s, %s, %s, %s, %s);
+            """,
+            (agent_name, source_type, status, summary, Json(details) if details is not None else None)
+        )
+        conn.commit()
+    except Exception as e:
+        print(f"Error saving social update: {e}")
         if 'conn' in locals() and conn:
             conn.rollback()
     finally:
