@@ -20,7 +20,7 @@ except ImportError:
 
 # Internal Imports
 from src.data_sentinel.ims_client import get_all_latest_rain_records
-from src.database.db_manager import save_ims_batch_to_db
+from src.database.db_manager import save_ims_batch_to_db, save_social_update_to_db
 from src.data_sentinel.flow_ingestor import AegisEcoDataIngestor
 
 WARNINGS_URL = "https://ims.gov.il/sites/default/files/ims_data/rss/alert/rssAlert_general_country_en.xml"
@@ -45,11 +45,18 @@ def sync_rain_data_tool() -> str:
     save_ims_batch_to_db(records)
     return f"Success: Fetched {len(records)} records from IMS and saved to the database."
 
+# Keywords used to keep only flood-relevant IMS warnings (e.g. skip Heat Stress, Dust, Sea Hazard)
+FLOOD_WARNING_KEYWORDS = [
+    "flood", "flash flood", "rain", "thunderstorm", "river", "stream", "wadi", "overflow", "drainage"
+]
+
 # Tool 2: Fetch Active IMS Warnings
 @tool("Fetch IMS Warnings")
 def fetch_ims_warnings_tool() -> str:
     """
-    Fetches active weather warnings from the IMS RSS feed.
+    Fetches active flood-related weather warnings from the IMS RSS feed
+    (e.g. Floods, Heavy Rain, Thunderstorms) — non-flood warnings (Heat Stress,
+    Dust, Mountain Obscuration, etc.) are ignored.
     Filters out warnings that have already expired based on the 'until' timestamp.
     Returns a text summary of active warnings.
     """
@@ -59,20 +66,25 @@ def fetch_ims_warnings_tool() -> str:
         
         root = ET.fromstring(response.content)
         items = root.findall('.//item')
-        
+
         if not items:
+            save_social_update_to_db(
+                "Warnings Monitor", "ims_warning", "no_findings",
+                "Checked the IMS warnings feed for flood-related alerts — no active warnings right now."
+            )
             return "No active warnings currently in the IMS feed."
-            
+
         # Define Israel timezone for accurate expiration checking against local time (LT)
         try:
             israel_tz = ZoneInfo("Asia/Jerusalem")
         except NameError:
             israel_tz = timezone(timedelta(hours=3))
-            
+
         now = datetime.now(israel_tz)
         active_warnings_count = 0
-        warnings_text = "Active IMS Warnings found:\n"
-        
+        warnings_text = "Active flood-related IMS Warnings found:\n"
+        active_warnings_details = []
+
         for item in items:
             # Smart extraction of text even from embedded HTML tags
             title_elem = item.find('title')
@@ -80,7 +92,12 @@ def fetch_ims_warnings_tool() -> str:
             
             desc_elem = item.find('description')
             description = "".join(desc_elem.itertext()).strip() if desc_elem is not None else 'No Description'
-            
+
+            # Skip warnings that aren't flood-related (e.g. Heat Stress, Dust, Mountain Obscuration)
+            text_to_check = (title + " " + description).lower()
+            if not any(kw in text_to_check for kw in FLOOD_WARNING_KEYWORDS):
+                continue
+
             # Extract the expiration time using Regex: 'until DD/MM HH'
             match = re.search(r'until\s+(\d{2})/(\d{2})\s+(\d{2})', description)
             if match:
@@ -105,13 +122,27 @@ def fetch_ims_warnings_tool() -> str:
             # Add to text only if it hasn't expired or didn't match the regex format
             active_warnings_count += 1
             warnings_text += f"- Title: {title}\n  Details: {description}\n\n"
-            
+            active_warnings_details.append({"title": title, "description": description})
+
         if active_warnings_count == 0:
+            save_social_update_to_db(
+                "Warnings Monitor", "ims_warning", "no_findings",
+                "Checked the IMS warnings feed for flood-related alerts — no active warnings right now."
+            )
             return "No active warnings currently in the IMS feed."
-            
+
+        save_social_update_to_db(
+            "Warnings Monitor", "ims_warning", "findings",
+            f"Checked the IMS warnings feed for flood-related alerts — found {active_warnings_count} active warning(s).",
+            details=active_warnings_details
+        )
         return warnings_text
-        
+
     except Exception as e:
+        save_social_update_to_db(
+            "Warnings Monitor", "ims_warning", "error",
+            "Couldn't reach the IMS warnings feed — will try again next cycle."
+        )
         return f"Error fetching warnings: {str(e)}"
 
 # Helper function for Tool 3
@@ -272,14 +303,17 @@ def search_israeli_rss_tool() -> str:
         "Times of Israel":  "https://www.timesofisrael.com/feed/",
     }
 
+    # Kept deliberately specific to flood/inundation terms — generic words like
+    # "rain" (גשם), "river" (נחל), "drainage" (ניקוז) match too many unrelated articles.
     FLOOD_KEYWORDS = [
-        "שיטפון", "שיטפונות", "הצפה", "הצפות", "נחל", "ניקוז",
-        "flood", "flash flood", "flooding", "wadi", "overflow",
-        "גשם", "עדשת מים", "נגר", "מי גשם"
+        "שיטפון", "שיטפונות", "הצפה", "הצפות",
+        "flood", "flash flood", "flooding", "wadi", "overflow"
     ]
 
     cutoff = datetime.now() - timedelta(hours=24)
     found = []
+    found_details = []
+    failed_sources = []
 
     for source, url in FEEDS.items():
         try:
@@ -300,14 +334,33 @@ def search_israeli_rss_tool() -> str:
 
                 link = entry.get("link", "")
                 found.append(f"[{source}] {title}\n  {link}")
+                found_details.append({"source": source, "title": title, "url": link})
 
-        except Exception as e:
-            found.append(f"[{source}] Error fetching feed: {e}")
+        except Exception:
+            failed_sources.append(source)
 
-    if not found:
-        return "No flood-related articles found in Israeli news RSS feeds in the past 24 hours."
+    sources_checked = ", ".join(FEEDS.keys())
 
-    return f"Found {len(found)} flood-related article(s) in Israeli news feeds:\n\n" + "\n\n".join(found)
+    if found:
+        save_social_update_to_db(
+            "RSS Analyst", "rss", "findings",
+            f"Checked {sources_checked} — found {len(found)} flood-related article(s).",
+            details=found_details
+        )
+        return f"Found {len(found)} flood-related article(s) in Israeli news feeds:\n\n" + "\n\n".join(found)
+
+    if failed_sources and len(failed_sources) == len(FEEDS):
+        save_social_update_to_db(
+            "RSS Analyst", "rss", "error",
+            "Couldn't reach the Israeli news feeds — will try again next cycle."
+        )
+    else:
+        save_social_update_to_db(
+            "RSS Analyst", "rss", "no_findings",
+            f"Checked {sources_checked} — no flood-related articles in the last 24 hours."
+        )
+
+    return "No flood-related articles found in Israeli news RSS feeds in the past 24 hours."
 
 
 @tool("Search Telegram Emergency Channels")
@@ -323,6 +376,10 @@ def search_telegram_channels_tool() -> str:
     api_hash = os.getenv("TELEGRAM_API_HASH")
 
     if not api_id or not api_hash:
+        save_social_update_to_db(
+            "Telegram Analyst", "telegram", "error",
+            "Telegram credentials are missing — can't check emergency channels."
+        )
         return "Error: TELEGRAM_API_ID or TELEGRAM_API_HASH missing from environment."
 
     CHANNELS = [
@@ -340,6 +397,7 @@ def search_telegram_channels_tool() -> str:
     session_path = os.path.join(os.getcwd(), "aegiseco_telegram")
     cutoff = datetime.now() - timedelta(hours=24)
     results = []
+    results_details = []
 
     try:
         with TelegramClient(session_path, int(api_id), api_hash) as client:
@@ -356,15 +414,35 @@ def search_telegram_channels_tool() -> str:
                             results.append(
                                 f"[@{channel} | {msg_time.strftime('%H:%M')}]\n{msg.text[:300]}"
                             )
-                except Exception as e:
-                    results.append(f"[@{channel}] Could not fetch: {e}")
+                            results_details.append({
+                                "channel": channel,
+                                "time": msg_time.strftime('%H:%M'),
+                                "text": msg.text[:300]
+                            })
+                except Exception:
+                    continue
 
     except Exception as e:
+        save_social_update_to_db(
+            "Telegram Analyst", "telegram", "error",
+            "Couldn't connect to Telegram — the session may need re-authentication."
+        )
         return f"Telegram client error: {e}. Run scripts/setup_telegram_session.py to authenticate."
 
+    channels_str = ", ".join(f"@{c}" for c in CHANNELS)
+
     if not results:
+        save_social_update_to_db(
+            "Telegram Analyst", "telegram", "no_findings",
+            f"Checked {len(CHANNELS)} emergency Telegram channels ({channels_str}) — no flood-related messages in the last 24 hours."
+        )
         return "No flood-related messages found in Telegram emergency channels in the past 24 hours."
 
+    save_social_update_to_db(
+        "Telegram Analyst", "telegram", "findings",
+        f"Checked {len(CHANNELS)} emergency Telegram channels ({channels_str}) — found {len(results)} flood-related message(s).",
+        details=results_details
+    )
     return f"Found {len(results)} flood-related Telegram message(s):\n\n" + "\n\n".join(results)
 
 
@@ -378,17 +456,32 @@ def search_flood_news_tool(query: str) -> str:
     enhanced_query = f"{query} {current_date}"
     
     try:
-        with DDGS() as ddgs:            
+        with DDGS() as ddgs:
             results = list(ddgs.text(enhanced_query, max_results=5, timelimit='d'))
-            
+
         if not results:
+            save_social_update_to_db(
+                "OSINT Analyst", "osint", "no_findings",
+                f"Searched the web for \"{query}\" — no recent flood reports found."
+            )
             return f"No recent news found from the past day for query: '{enhanced_query}'."
-            
+
         formatted_results = f"Search Results for '{enhanced_query}' (Past day ONLY):\n"
+        details = []
         for r in results:
             formatted_results += f"- Title: {r.get('title')}\n  Snippet: {r.get('body')}\n  Link: {r.get('href')}\n\n"
-            
+            details.append({"title": r.get('title'), "snippet": r.get('body'), "url": r.get('href')})
+
+        save_social_update_to_db(
+            "OSINT Analyst", "osint", "findings",
+            f"Searched the web for \"{query}\" — found {len(results)} recent report(s).",
+            details=details
+        )
         return formatted_results
-        
+
     except Exception as e:
+        save_social_update_to_db(
+            "OSINT Analyst", "osint", "error",
+            f"Web search for \"{query}\" failed — will retry next cycle."
+        )
         return f"Error performing search: {str(e)}"
