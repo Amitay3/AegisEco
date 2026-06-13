@@ -15,6 +15,11 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.events import EVENT_JOB_EXECUTED
 from crewai import LLM
 
+import warnings
+# Suppress Resource management Warnings
+warnings.filterwarnings("ignore", category=ResourceWarning)
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+
 base_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(base_dir)
 

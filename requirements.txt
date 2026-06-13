@@ -29,12 +29,13 @@ sqlalchemy
 # Environment and Web
 python-dotenv==1.1.1
 requests
-duckduckgo-search
-feedparser
-telethon
+ddgs
 
 # Scheduling
 apscheduler
 
-# Web Framework
+# Web Framework and UI Components
 streamlit
+folium
+streamlit-folium
+streamlit-autorefresh
