@@ -30,6 +30,7 @@ sqlalchemy
 python-dotenv==1.1.1
 requests
 ddgs
+tzdata
 
 # Scheduling
 apscheduler
@@ -39,3 +40,4 @@ streamlit
 folium
 streamlit-folium
 streamlit-autorefresh
+streamlit-js-eval
