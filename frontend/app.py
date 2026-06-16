@@ -5,10 +5,11 @@ from datetime import datetime
 from utils.db_connector import run_query
 from utils.permissions import has_access
 from components.risk_map import render_risk_map
-
+from streamlit_js_eval import get_geolocation
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 def _format_relative_time(ts):
-    """Formats a UTC timestamp from the DB as a short 'time ago' string."""
     try:
         ts = ts.to_pydatetime()
     except AttributeError:
@@ -23,13 +24,25 @@ def _format_relative_time(ts):
         return f"{int(delta_seconds // 3600)}h ago"
     return f"{int(delta_seconds // 86400)}d ago"
 
+def get_nearest_city(lat, lon):
+    query = f"""
+        SELECT name_eng
+        FROM settlements
+        ORDER BY location <-> ST_SetSRID(ST_MakePoint({lon}, {lat}), 4326)
+        LIMIT 1;
+    """
+    try:
+        df = run_query(query)
+        if not df.empty:
+            return df.iloc[0]['name_eng']
+    except Exception:
+        pass
+    return None
 
-# Calculate the exact absolute path to the images
 current_dir = os.path.dirname(os.path.abspath(__file__))
 logo_path = os.path.join(current_dir, "assets", "logo.jpg")
 favicon_path = os.path.join(current_dir, "assets", "favicon.jpg")
 
-# 1. PAGE CONFIGURATION
 st.set_page_config(
     page_title="AegisEco Dashboard",
     page_icon=favicon_path,
@@ -37,7 +50,6 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# 2. CUSTOM CSS
 st.markdown("""
     <style>
     .main-status-box {
@@ -96,10 +108,15 @@ st.markdown("""
         border: 1px solid;
         white-space: nowrap;
     }
+    .stMarkdown h1 a, .stMarkdown h2 a, .stMarkdown h3 a, .stMarkdown h4 a {
+    display: none !important;
+    }
+    [data-testid="stSidebar"] {
+        width: 150px !important;
+    }
     </style>
     """, unsafe_allow_html=True)
 
-# Fetch the global city list once to be used in both the sidebar and the main tab
 city_list = []
 try:
     settlements_df = run_query("SELECT DISTINCT name_eng FROM settlements ORDER BY name_eng;")
@@ -108,48 +125,118 @@ try:
 except Exception as e:
     st.error(f"Failed to fetch settlements from DB: {e}")
 
-# Initialize global state for the selected city
-if 'selected_city' not in st.session_state:
+if 'is_authenticated' not in st.session_state:
+    st.session_state.is_authenticated = False
+    st.session_state.user_role = None
+    st.session_state.specific_entity = None
     st.session_state.selected_city = None
+    st.session_state.user_lat = None
+    st.session_state.user_lon = None
+    st.session_state.request_location = False
 
-# 3. SIDEBAR
+if not st.session_state.is_authenticated:
+    col1, col2, col3 = st.columns([1.5, 1.2, 1.5])
+    
+    with col2:
+        img_col1, img_col2, img_col3 = st.columns([1, 2, 1])
+        with img_col2:
+            st.image(logo_path, use_container_width=True)
+            
+        st.markdown("<h3 style='text-align: center; margin-top: -15px;'>Welcome to AegisEco</h3>", unsafe_allow_html=True)
+        st.divider()
+        
+        selected_role = st.selectbox(
+            "Select your entity type:",
+            ["Citizen", "City", "Authority"],
+            index=None,
+            placeholder="Select Role..."
+        )
+        
+        selected_entity = None
+        
+        if selected_role == "City":
+            auto_city = None
+            if st.session_state.get('user_lat') is not None:
+                auto_city = get_nearest_city(st.session_state.user_lat, st.session_state.user_lon)
+                
+            default_idx = city_list.index(auto_city) if auto_city in city_list else None
+            
+            col_sel, col_btn = st.columns([4, 2])
+            
+            with col_sel:
+                selected_entity = st.selectbox(
+                    "Select Municipality:",
+                    options=city_list,
+                    index=default_idx,
+                    placeholder="Choose"
+                )
+                
+            with col_btn:
+                st.markdown("<div style='margin-top: 28px;'></div>", unsafe_allow_html=True)
+                
+                if st.button("Use my location", use_container_width=True):
+                    st.session_state.request_location = True
+                    st.toast("Loading location...")
+
+            if st.session_state.get('request_location', False):
+                loc = get_geolocation()
+                if loc:
+                    st.session_state.user_lat = loc['coords']['latitude']
+                    st.session_state.user_lon = loc['coords']['longitude']
+                    st.session_state.request_location = False
+                    time.sleep(1)
+                    st.rerun()
+
+        elif selected_role == "Authority":
+            selected_entity = st.selectbox(
+                "Select Emergency Force:",
+                options=["Police", "Fire & Rescue",],
+                index=None,
+                placeholder="Select Force..."
+            )
+            
+        st.write("")
+        
+        login_disabled = True
+        if selected_role == "Citizen":
+            login_disabled = False
+        elif selected_role in ["City", "Authority"] and selected_entity is not None:
+            login_disabled = False
+            
+        if st.button("Enter AegisEco System", use_container_width=True, disabled=login_disabled, type="primary"):
+            st.session_state.is_authenticated = True
+            st.session_state.user_role = selected_role
+            st.session_state.specific_entity = selected_entity
+            st.rerun()
+            
+    st.stop()
+
+user_role = st.session_state.user_role
+active_entity = st.session_state.specific_entity
+
 with st.sidebar:
     st.image(logo_path, use_container_width=True)
     st.divider()
-
-    st.header("System Settings")
-    user_role = st.selectbox(
-        "Select User Role:",
-        ["Citizen", "City", "Authority"],
-        help="Change access level to view different system modules"
-    )
-
-    # Contextual input for City role
-    if user_role == "City":
-        st.write("Municipality Configuration")
-        sidebar_city = st.selectbox(
-            "Select your municipality:",
-            options=city_list,
-            index=None,
-            placeholder="Type to search..."
-        )
-        if sidebar_city:
-            st.session_state.selected_city = sidebar_city
-    else:
-        # Clear the specific city context if role changes
+    
+    st.markdown("### Profile")
+    st.write(f"**Role:** {user_role}")
+    if active_entity:
+        st.write(f"**Entity:** {active_entity}")
+        
+    st.divider()
+    
+    if st.button("Switch Profile", use_container_width=True):
+        st.session_state.is_authenticated = False
+        st.session_state.user_role = None
+        st.session_state.specific_entity = None
         st.session_state.selected_city = None
+        st.rerun()
 
-    st.sidebar.divider()
-    st.sidebar.info(f"Connected as: {user_role}")
-
-# 4. GLOBAL STATUS BANNER
 alert_basins = []
 try:
-    cache_buster = int(time.time() // 30)
-    banner_query = f"""
-        /* Cache Buster: {cache_buster} */
-        SELECT main_basin_name
-        FROM main_basins_status
+    banner_query = """
+        SELECT main_basin_name 
+        FROM main_basins_status 
         WHERE has_flood_alert = TRUE;
     """
     banner_df = run_query(banner_query)
@@ -167,11 +254,10 @@ if alert_basins:
 else:
     st.markdown('<div class="main-status-box status-ok">ALL SYSTEMS NORMAL - NO IMMEDIATE THREATS</div>', unsafe_allow_html=True)
 
-# LIVE CONNECTION STATUS INDICATOR
 if 'db_offline_since' not in st.session_state:
     st.session_state.db_offline_since = None
 if 'last_successful_update' not in st.session_state:
-    st.session_state.last_successful_update = time.strftime('%H:%M')
+    st.session_state.last_successful_update = datetime.now(ZoneInfo("Asia/Jerusalem")).strftime('%H:%M')
 
 is_stale = False
 if st.session_state.db_offline_since is not None:
@@ -189,7 +275,6 @@ else:
         unsafe_allow_html=True
     )
 
-# 5. DYNAMIC TABS GENERATION
 available_tabs = []
 if has_access(user_role, "view_risk_map"):
     available_tabs.append("Risk Map")
@@ -197,36 +282,27 @@ if has_access(user_role, "view_city_dashboard"):
     available_tabs.append("City Control Center")
 if has_access(user_role, "view_basins_data"):
     available_tabs.append("Councils Info")
-if has_access(user_role, "view_system_logs"):
-    available_tabs.append("System Logs")
 if has_access(user_role, "view_social_feed"):
     available_tabs.append("Social Updates")
 
 tabs = st.tabs(available_tabs)
 tab_index = 0
 
-# --- TAB: RISK MAP ---
 if has_access(user_role, "view_risk_map"):
     with tabs[tab_index]:
         render_risk_map()
     tab_index += 1
 
-# --- TAB: CITY CONTROL CENTER ---
 if has_access(user_role, "view_city_dashboard"):
     with tabs[tab_index]:
-        st.subheader("City Level Dashboard")
+        st.subheader("City Level Information")
 
-        # Determine which city to display based on user role and state
         active_city = None
 
         if user_role == "City":
-            if st.session_state.selected_city:
-                active_city = st.session_state.selected_city
-                st.write("Displaying localized data and alerts for your configured municipality.")
-            else:
-                st.info("Please configure your municipality in the sidebar menu.")
+            active_city = st.session_state.specific_entity
+            st.write(f"Displaying localized data and alerts for **{active_city}**.")
         else:
-            # For Authority or Citizen, allow searching globally
             st.write("Search and select a municipality to view localized data and alerts.")
             if city_list:
                 active_city = st.selectbox(
@@ -260,7 +336,6 @@ if has_access(user_role, "view_city_dashboard"):
 
                     st.markdown(f"### Status for **{city_row['name_eng']}**")
 
-                    # 1. Display Alert Status First
                     has_local_alert = city_row.get('has_flood_alert', False) == True
 
                     if has_local_alert:
@@ -272,11 +347,10 @@ if has_access(user_role, "view_city_dashboard"):
                             "3. Prepare emergency response teams for deployment."
                         )
                     else:
-                        st.success(f"NO FLOOD ALERT. Conditions are optimal for {city_row['name_eng']}.")
-
-                    st.write("")
-
-                    # 2. Conditional Forecast Display
+                        st.success(f"NO FLOOD ALERT for {city_row['name_eng']}.")
+                        
+                    st.write("") 
+                    
                     has_forecast = city_row['current_6h_forecast'] != -1 and city_row['next_6h_forecast'] != -1
 
                     if has_forecast:
@@ -286,14 +360,13 @@ if has_access(user_role, "view_city_dashboard"):
                         with col2:
                             st.metric(label="Next 6H Forecast (mm)", value=city_row['next_6h_forecast'])
                     else:
-                        st.info("No 6-hour forecast data available for this municipality.")
+                        pass
 
             except Exception as e:
                 st.error(f"Error loading data for {active_city}: {e}")
 
     tab_index += 1
 
-# --- TAB: COUNCILS INFO ---
 if has_access(user_role, "view_basins_data"):
     with tabs[tab_index]:
         st.subheader("Regional Councils Registry")
@@ -305,17 +378,6 @@ if has_access(user_role, "view_basins_data"):
             st.error(f"Error fetching data: {e}")
     tab_index += 1
 
-# --- TAB: SYSTEM LOGS ---
-if has_access(user_role, "view_system_logs"):
-    with tabs[tab_index]:
-        st.subheader("Live Agent Activity")
-        st.write("Monitoring internal communications between AI agents:")
-        st.code("""
-        real time logs will be displayed here
-        """, language="bash")
-    tab_index += 1
-
-# --- TAB: SOCIAL UPDATES ---
 if has_access(user_role, "view_social_feed"):
     with tabs[tab_index]:
         st.subheader("Social & Field Intelligence")
