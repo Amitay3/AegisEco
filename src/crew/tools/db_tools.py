@@ -183,3 +183,150 @@ def run_all_basins_inference_tool() -> str:
     models for all main river basins. Returns a formatted report of flood probabilities.
     """
     return _run_all_basins_inference()
+
+
+# Re-alert for a basin that's still above threshold if its probability has
+# climbed by at least this many percentage points since the last warning —
+# otherwise an hours-long flood would only ever produce a single message.
+ALERT_ESCALATION_THRESHOLD_PCT = 15.0
+
+
+def _get_alert_plan():
+    """
+    Compares the latest ML status per basin (main_basins_status) against the
+    last alert logged for that basin (alert_log). Returns three lists of
+    (basin_name, probability, previous_probability) tuples:
+    - new_alerts: basins that need a fresh flood-warning message
+    - all_clears: basins whose previously-sent warning should be lifted
+    - no_action: basins that already match their last logged alert state
+    """
+    db_url = os.getenv("DATABASE_URL")
+    conn = psycopg2.connect(db_url)
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT main_basin_name, has_flood_alert, flood_probability
+            FROM main_basins_status
+            WHERE has_flood_alert IS NOT NULL;
+        """)
+        statuses = cursor.fetchall()
+
+        cursor.execute("""
+            SELECT DISTINCT ON (main_basin_name)
+                main_basin_name, alert_type, flood_probability
+            FROM alert_log
+            ORDER BY main_basin_name, sent_at DESC;
+        """)
+        last_alerts = {row[0]: (row[1], row[2]) for row in cursor.fetchall()}
+        cursor.close()
+    finally:
+        conn.close()
+
+    new_alerts, all_clears, no_action = [], [], []
+
+    for basin, has_alert, probability in statuses:
+        probability = float(probability) if probability is not None else 0.0
+        last_type, last_prob = last_alerts.get(basin, (None, None))
+        last_prob = float(last_prob) if last_prob is not None else None
+
+        if has_alert:
+            if last_type != "flood_warning":
+                new_alerts.append((basin, probability, last_prob))
+            elif last_prob is not None and probability - last_prob >= ALERT_ESCALATION_THRESHOLD_PCT:
+                new_alerts.append((basin, probability, last_prob))
+            else:
+                no_action.append((basin, probability, "active warning already sent"))
+        else:
+            if last_type == "flood_warning":
+                all_clears.append((basin, probability, last_prob))
+            else:
+                no_action.append((basin, probability, "normal, no active warning"))
+
+    return new_alerts, all_clears, no_action
+
+
+def _format_alert_plan(new_alerts, all_clears, no_action) -> str:
+    """Formats the alert plan lists into a plain-text report for the LLM."""
+    lines = []
+
+    if new_alerts:
+        lines.append("NEW FLOOD WARNINGS TO SEND (draft ONE emergency message covering all of these basins):")
+        for basin, prob, last_prob in new_alerts:
+            if last_prob is None:
+                lines.append(f"- {basin}: {prob:.1f}% (no prior warning active)")
+            else:
+                lines.append(f"- {basin}: {prob:.1f}% (ESCALATION - prior warning sent at {last_prob:.1f}%, risk has increased)")
+    else:
+        lines.append("NEW FLOOD WARNINGS TO SEND: none.")
+
+    lines.append("")
+
+    if all_clears:
+        lines.append("ALL-CLEAR NOTICES TO SEND (draft ONE separate message covering all of these basins - their flood warning is now resolved):")
+        for basin, prob, last_prob in all_clears:
+            prior = f"{last_prob:.1f}%" if last_prob is not None else "unknown"
+            lines.append(f"- {basin}: now {prob:.1f}% (was {prior} when last warned)")
+    else:
+        lines.append("ALL-CLEAR NOTICES TO SEND: none.")
+
+    lines.append("")
+
+    lines.append("NO ACTION (do not mention these basins in any Telegram message):")
+    if no_action:
+        for basin, prob, note in no_action:
+            lines.append(f"- {basin}: {prob:.1f}% ({note})")
+    else:
+        lines.append("- (none)")
+
+    return "\n".join(lines)
+
+
+@tool("Get Alert Plan")
+def get_alert_plan_tool() -> str:
+    """
+    Compares the latest ML inference results against the history of alerts
+    already sent (see 'Log Sent Alert'), and returns which basins need a NEW
+    flood warning, which need an ALL-CLEAR (a previously warned basin has
+    returned to normal), and which need no action (already warned with no
+    major change, or still normal). Call this BEFORE deciding whether to send
+    any Telegram alert, so the same warning isn't repeated every hour.
+    """
+    try:
+        new_alerts, all_clears, no_action = _get_alert_plan()
+    except Exception as e:
+        return f"Database query failed: {e}"
+    return _format_alert_plan(new_alerts, all_clears, no_action)
+
+
+def _log_alert(main_basin_name: str, alert_type: str, flood_probability: float) -> str:
+    db_url = os.getenv("DATABASE_URL")
+    conn = psycopg2.connect(db_url)
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO alert_log (main_basin_name, alert_type, flood_probability)
+            VALUES (%s, %s, %s);
+            """,
+            (main_basin_name, alert_type, flood_probability)
+        )
+        conn.commit()
+        cursor.close()
+    finally:
+        conn.close()
+    return f"Logged {alert_type} for {main_basin_name} at {flood_probability:.1f}%."
+
+
+@tool("Log Sent Alert")
+def log_alert_tool(main_basin_name: str, alert_type: str, flood_probability: float) -> str:
+    """
+    Records that a Telegram alert was sent for a basin, so future runs don't
+    repeat it. 'alert_type' must be exactly 'flood_warning' or 'all_clear'.
+    Call this once for EACH basin included in a message you just sent.
+    """
+    if alert_type not in ("flood_warning", "all_clear"):
+        return "Error: alert_type must be 'flood_warning' or 'all_clear'."
+    try:
+        return _log_alert(main_basin_name, alert_type, float(flood_probability))
+    except Exception as e:
+        return f"Database error while logging alert: {e}"

@@ -20,22 +20,46 @@ analyze_risk_task:
 
 alert_task:
   description: >
-    Review the OSINT Ground-Truth Report and the ML Inference Report carefully.
-    Your goal is to determine if a flood alert is necessary, and if so, draft and broadcast an Emergency Message.
+    Step 1: Call the 'Get Alert Plan' tool first. It compares the latest ML
+    results against the alerts already sent and tells you exactly which
+    basins need a new warning, which need an all-clear, and which need no
+    action at all. Treat its output as the source of truth for WHICH basins
+    to message — the OSINT Ground-Truth Report and ML Inference Report are
+    only used to add VERIFICATION CONTEXT to a message you are already
+    sending, never to add or remove basins from the plan.
 
-    CRITICAL DECISION RULE:
-    - If BOTH reports show "Normal", "All Clear", or no imminent threats: DO NOT use the Telegram tool. Simply output the text "System Normal: No Telegram alert sent."
-    - If EITHER the ML report shows a "CRITICAL ALERT" OR the OSINT report confirms a flood: You MUST use the 'Send Telegram Alert' tool to publish an emergency message.
+    Step 2: If "NEW FLOOD WARNINGS TO SEND" lists one or more basins:
+    Draft and send ONE emergency message via the 'Send Telegram Alert' tool
+    covering ALL of those basins, following the rules below. Then call the
+    'Log Sent Alert' tool once for EACH basin in that list, passing its exact
+    name and probability from the plan with alert_type='flood_warning'.
 
-    Rules for drafting the emergency message (ONLY if triggered):
-    1. EXACT LOCATION: The message MUST clearly state the Basin Name and region right at the top.
+    Rules for the emergency message:
+    1. EXACT LOCATION: The message MUST clearly state the Basin Name and region for each basin at the top.
     2. FORMATTING: Use HTML tags for emphasis (e.g., <b>Bold</b> or <i>Italic</i>).
-    3. DETAILS: Include the exact probability from the ML model.
-    4. VERIFICATION: State clearly if the threat is a mathematical prediction, or if it was visually confirmed by the OSINT agent.
-    5. ROADS: For each basin that triggered an alert, you MUST call the 'Get Affected Roads for Basin' tool using the exact main basin name. Include the returned road names in the alert under a clearly labelled section (e.g., <b>⚠️ Affected Roads:</b>). If the tool returns no roads, omit this section.
+    3. DETAILS: Include the exact probability from the plan for each basin. If a basin is marked ESCALATION, explicitly say the risk has increased since the previous warning.
+    4. VERIFICATION: State clearly if the threat is a mathematical prediction, or if it was also confirmed by the OSINT Ground-Truth Report.
+    5. ROADS: For each basin in this list, you MUST call the 'Get Affected Roads for Basin' tool using its exact main basin name. Include the returned road names under a clearly labelled section (e.g., <b>⚠️ Affected Roads:</b>). If the tool returns no roads, omit this section for that basin.
     6. ACTION: Suggest immediate safety actions (e.g., "Avoid roads crossing this basin").
+
+    Step 3: If "ALL-CLEAR NOTICES TO SEND" lists one or more basins:
+    Draft and send ONE SEPARATE message via the 'Send Telegram Alert' tool
+    covering ALL of those basins, clearly stating that the flood warning for
+    each named basin has been lifted and conditions have returned to normal
+    (include its current probability from the plan). Then call the
+    'Log Sent Alert' tool once for EACH basin in that list, passing its exact
+    name and current probability with alert_type='all_clear'.
+
+    Step 4: Basins listed under "NO ACTION" must NOT be mentioned in any
+    Telegram message and must NOT be passed to 'Log Sent Alert'.
+
+    Step 5: If BOTH "NEW FLOOD WARNINGS TO SEND" and "ALL-CLEAR NOTICES TO
+    SEND" are empty, do NOT call 'Send Telegram Alert' or 'Log Sent Alert' at
+    all. Simply output the text "System Normal: No alert changes."
   expected_output: >
-    Either a confirmation that the 'Send Telegram Alert' tool was executed with the emergency message, OR a short text stating "System Normal: No Telegram alert sent."
+    A summary of which messages (if any) were sent via 'Send Telegram Alert'
+    and which basins were recorded via 'Log Sent Alert', OR the text
+    "System Normal: No alert changes." if the alert plan required no action.
   agent: communications_officer
   
 verify_rss_task:

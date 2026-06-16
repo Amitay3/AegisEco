@@ -6,14 +6,18 @@ Populate the two underlying tables that feed the raw_hourly_basin_data view:
 Run from the project root:
     python scripts/simulate_flood_month.py
 
-Then run a single pipeline cycle:
-    python main.py          (press Ctrl+C after the first cycle completes)
+This injects the synthetic storm, runs a quick ML self-test, then immediately
+runs one full AegisEco agent cycle (same as the first cycle of `python main.py`)
+- including Telegram alerts for any basin that now crosses its flood threshold.
 
 Storm timeline (relative to NOW):
-    > 9 days ago  : dry baseline
-    6 – 9 days ago: pre-storm buildup
-    2 – 6 days ago: flood peak        ← fully inside the 8-day ML window
-    0 – 2 days ago: slow recession    ← still above threshold → models fire
+    > 9 days ago    : dry baseline
+    1.5 – 9 days ago: pre-storm buildup (gradual ramp-up)
+    0 – 1.5 days ago: flood peak — one intense ~36h storm cell
+
+Calibrated so the 7-day rolling rainfall lands around 150-300mm — a severe,
+flood-triggering total, but in line with the most extreme documented Israeli
+storms rather than an entire year's rain falling in one week.
 """
 
 import os
@@ -23,7 +27,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
 import psycopg2
 from psycopg2.extras import execute_values
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 
 load_dotenv()  # must run before any db_manager imports so DATABASE_URL is set
@@ -40,13 +44,14 @@ ALL_BASINS = [
 
 DAYS_OF_HISTORY = 35   # >= 8 so all ML rolling features have enough history
 
-# Anchor the simulation to a winter date so seasonal features fire correctly.
-# get_live_features_for_model will be called with this same reference time.
-REFERENCE_TIME = datetime(2026, 1, 20, 12, 0, 0, tzinfo=timezone.utc)
+# Anchor the simulation to "now" (local wall-clock, matching reference_time=None's
+# datetime.now() and the timestamps the real data-sync tools write) so the
+# synthetic storm's last hour is the most recent data the live agent cycle sees.
+REFERENCE_TIME = datetime.now().replace(minute=0, second=0, microsecond=0)
 
 # Storm phase boundaries (days before REFERENCE_TIME)
 BUILDUP_START = 9
-PEAK_START    = 6
+PEAK_START    = 1.5
 
 
 def _phase_values(days_before_end: float, is_flood: bool) -> tuple[float, float]:
@@ -62,15 +67,14 @@ def _phase_values(days_before_end: float, is_flood: bool) -> tuple[float, float]
 
     elif days_before_end > PEAK_START:
         p = (BUILDUP_START - days_before_end) / (BUILDUP_START - PEAK_START)
-        # Rain only 35% of hours during buildup — bursty, not continuous
-        rain = max(0.0, np.random.normal(0.8 + 4.0 * p, 1.0)) if np.random.random() < 0.35 else 0.0
-        flow = max(0.1,  np.random.normal(0.5 + 5.0 * p, 0.8))
+        # Rain only 30% of hours during buildup — bursty, not continuous
+        rain = max(0.0, np.random.normal(0.5 + 2.5 * p, 0.8)) if np.random.random() < 0.30 else 0.0
+        flow = max(0.1,  np.random.normal(0.5 + 4.0 * p, 0.8))
 
     else:
-        # Peak extends to the current moment so the model sees active flood conditions
-        # Rain 60% of hours — heavy but bursty
-        rain = max(0.0, np.random.normal(6.0, 2.0)) if np.random.random() < 0.60 else 0.0
-        flow = max(0.0,  np.random.normal(10.0, 2.0))
+        # Peak: one intense ~36h storm cell, heavy but bursty
+        rain = max(0.0, np.random.normal(5.0, 1.5)) if np.random.random() < 0.50 else 0.0
+        flow = max(0.0,  np.random.normal(8.0, 2.0))
 
     return rain, flow
 
@@ -84,7 +88,7 @@ def main():
     now          = REFERENCE_TIME
     window_start = now - timedelta(days=DAYS_OF_HISTORY + 1)
 
-    print(f"Simulation range : {window_start.strftime('%Y-%m-%d')} → {now.strftime('%Y-%m-%d %H:%M UTC')} (winter anchor)")
+    print(f"Simulation range : {window_start.strftime('%Y-%m-%d')} → {now.strftime('%Y-%m-%d %H:%M')} (anchored to now, local time)")
     print(f"Flood basins     : {', '.join(FLOOD_BASINS)}")
     print(f"Storm timeline   : buildup {BUILDUP_START}d ago → peak {PEAK_START}d ago → now (active peak)\n")
 
@@ -197,6 +201,13 @@ def main():
             print(df.T.to_string())
         else:
             print(f"\n[{basin}] ⚠️  No features returned")
+
+    print("\n── Running full AegisEco agent cycle (live demo) ───────────")
+    print("This calls the LLM agents, cross-checks against OSINT/RSS/IMS, and may")
+    print("send real Telegram alerts for any basin now over its flood threshold.\n")
+
+    from main import run_system_cycle
+    run_system_cycle(mode="full")
 
     print("\n── To restore real data ────────────────────────────────────")
     print(f"    DELETE FROM rain_measurements")

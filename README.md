@@ -13,9 +13,11 @@ alerts in near real time.
 2. **ML inference** — 16 XGBoost classifiers (one per main drainage basin) score the
    latest hourly features and flag basins likely to flood in the next 1–3 hours.
 3. **Agent verification & alerting** — a sequential CrewAI pipeline (runs hourly)
-   re-checks ML alerts against OSINT search, Israeli news RSS, Telegram emergency
-   channels, and official IMS warnings, then drafts and sends a Telegram alert if a
-   flood is likely.
+   re-checks ML alerts against OSINT search, Israeli news RSS, and official IMS
+   warnings, then sends a Telegram alert for any newly-flagged basin and a
+   stand-down message once a previously-alerted basin returns to normal. Each
+   basin's alert state is tracked in `alert_log` so the same warning isn't
+   repeated every hour.
 4. **Dashboard** — a Streamlit app shows a live risk map of Israel's basins, affected
    roads, council/settlement forecasts, and role-based views (Citizen / City / Authority).
 
@@ -68,6 +70,7 @@ AegisEco/
 │   ├── simulate_flood_month.py       # Inject a synthetic flood month for demos/testing
 │   ├── setup_telegram_session.py     # One-time Telegram auth
 │   ├── setup_social_updates_table.py # One-time DB setup for the Social Updates feed
+│   ├── setup_alert_log_table.py      # One-time DB setup for alert dedup/all-clear tracking
 │   ├── check_roads.py                # Sanity-check basin → road mappings
 │   └── test_rss_tool.py              # Smoke-test the RSS news feeds
 │
@@ -134,13 +137,36 @@ AegisEco/
 | 2 | Hydrological Analyst | Runs the 16 XGBoost flood models on live data | Run ML Inference on All Basins |
 | 3 | OSINT Analyst | Searches the web for real-world flood reports | Search Web and News for Floods |
 | 4 | RSS Analyst | Scans Israeli news feeds (Ynet, Walla, Mako, Times of Israel) | Search Israeli News RSS Feeds |
-| 5 | Telegram Analyst | Monitors public emergency Telegram channels | Search Telegram Emergency Channels |
+| 5 | Telegram Analyst *(temporarily disabled)* | Monitors public emergency Telegram channels | Search Telegram Emergency Channels |
 | 6 | Warnings Monitor | Parses official IMS weather warnings | Fetch IMS Warnings |
-| 7 | Communications Officer | Decides whether to alert and broadcasts to Telegram | Get Affected Roads for Basin, Send Telegram Alert |
+| 7 | Communications Officer | Sends new flood warnings and all-clears, avoiding repeats | Get Alert Plan, Get Affected Roads for Basin, Send Telegram Alert, Log Sent Alert |
+
+The Telegram Analyst task is commented out of the crew's task list in
+`src/crew/aegiseco_crew.py` because the Telethon session for
+`search_telegram_channels_tool` currently isn't authenticated, which was disrupting
+the cycle. Re-enable it there once `python scripts/setup_telegram_session.py` has
+completed a successful login.
 
 The crew runs sequentially in this order. If every LLM attempt fails, `main.py` falls
-back to a rule-based check: run ML inference directly and send a failsafe Telegram
-alert if any basin is critical.
+back to a rule-based check: run ML inference directly and use the same alert plan
+(see below) to send a failsafe Telegram alert only for newly-flagged or newly-cleared
+basins.
+
+### Alert deduplication & all-clear
+
+The Communications Officer's `alert_task` starts by calling the **Get Alert Plan**
+tool, which compares each basin's current `main_basins_status.has_flood_alert` against
+the most recent entry for that basin in `alert_log`:
+
+- **New flood warning** — a basin just crossed into alert (or its probability rose by
+  ≥15 percentage points since the last warning while still in alert) → send one
+  emergency message covering all such basins, then log each as `flood_warning`.
+- **All-clear** — a basin that had an active `flood_warning` has dropped back to
+  normal → send one stand-down message covering all such basins, then log each as
+  `all_clear`.
+- **No action** — a basin's alert state hasn't changed since the last logged entry
+  (already warned and still in alert, or still normal) → nothing is sent, so an
+  ongoing flood doesn't trigger a fresh Telegram message every hour.
 
 ## ML Models
 
@@ -198,6 +224,8 @@ Neon PostgreSQL + PostGIS. Key tables/views:
 - `settlements` — councils/cities with rainfall forecasts for the City Control Center
 - `social_updates` — per-run activity log from the intel-gathering agents (OSINT, RSS,
   Telegram, Warnings Monitor), powering the dashboard's Social Updates tab
+- `alert_log` — history of flood-warning and all-clear messages sent per basin, used
+  to avoid repeating an active alert every hour and to detect when an all-clear is due
 
 ## Useful scripts
 
@@ -208,3 +236,5 @@ Neon PostgreSQL + PostGIS. Key tables/views:
 - `scripts/setup_telegram_session.py` — one-time Telegram auth (see Setup).
 - `scripts/setup_social_updates_table.py` — one-time creation of the `social_updates` table
   used by the Social Updates tab.
+- `scripts/setup_alert_log_table.py` — one-time creation of the `alert_log` table used
+  for alert deduplication and all-clear tracking.

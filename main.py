@@ -27,7 +27,7 @@ sys.path.append(base_dir)
 os.environ["LITELLM_LOCAL_MODEL_COST_MAP"] = "True"
 
 from src.crew.aegiseco_crew import AegisEcoCrew
-from src.crew.tools.db_tools import _run_all_basins_inference
+from src.crew.tools.db_tools import _run_all_basins_inference, _get_alert_plan, _log_alert
 from src.crew.tools.alert_tools import _send_telegram
 
 last_sigint_time = 0
@@ -94,15 +94,32 @@ def run_system_cycle(mode="full"):
         try:
             report = _run_all_basins_inference()
             print(report)
-            if "CRITICAL ALERT" in report:
+
+            new_alerts, all_clears, _ = _get_alert_plan()
+
+            if new_alerts:
+                basin_lines = "\n".join(f"- {basin}: {prob:.1f}%" for basin, prob, _ in new_alerts)
                 msg = (
                     "⚠️ <b>[FAILSAFE ALERT]</b> AegisEco AI agents are currently unavailable.\n"
-                    "Direct ML inference has detected a flood risk:\n\n"
-                    f"{report}"
+                    "Direct ML inference has detected flood risk in:\n\n"
+                    f"{basin_lines}"
                 )
                 print(_send_telegram(msg))
-            else:
-                print("Failsafe check complete: No critical flood risk detected.")
+                for basin, prob, _ in new_alerts:
+                    _log_alert(basin, "flood_warning", prob)
+
+            if all_clears:
+                basin_lines = "\n".join(f"- {basin}: now {prob:.1f}%" for basin, prob, _ in all_clears)
+                msg = (
+                    "✅ <b>[FAILSAFE]</b> Flood warning lifted for:\n\n"
+                    f"{basin_lines}"
+                )
+                print(_send_telegram(msg))
+                for basin, prob, _ in all_clears:
+                    _log_alert(basin, "all_clear", prob)
+
+            if not new_alerts and not all_clears:
+                print("Failsafe check complete: No alert changes.")
         except Exception as fe:
             print(f"Failsafe check failed: {fe}")
 
