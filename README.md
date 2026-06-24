@@ -13,8 +13,9 @@ alerts in near real time.
 2. **ML inference** — 16 XGBoost classifiers (one per main drainage basin) score the
    latest hourly features and flag basins likely to flood in the next 1–3 hours.
 3. **Agent verification & alerting** — a sequential CrewAI pipeline (runs hourly)
-   re-checks ML alerts against OSINT search, Israeli news RSS, and official IMS
-   warnings, then sends a Telegram alert for any newly-flagged basin and a
+   re-checks ML alerts against OSINT search, Israeli news RSS, public emergency
+   Telegram channels, and official IMS warnings, then sends a Telegram alert for
+   any newly-flagged basin and a
    stand-down message once a previously-alerted basin returns to normal. Each
    basin's alert state is tracked in `alert_log` so the same warning isn't
    repeated every hour.
@@ -137,15 +138,15 @@ AegisEco/
 | 2 | Hydrological Analyst | Runs the 16 XGBoost flood models on live data | Run ML Inference on All Basins |
 | 3 | OSINT Analyst | Searches the web for real-world flood reports | Search Web and News for Floods |
 | 4 | RSS Analyst | Scans Israeli news feeds (Ynet, Walla, Mako, Times of Israel) | Search Israeli News RSS Feeds |
-| 5 | Telegram Analyst *(temporarily disabled)* | Monitors public emergency Telegram channels | Search Telegram Emergency Channels |
+| 5 | Telegram Analyst | Monitors public emergency Telegram channels | Search Telegram Emergency Channels |
 | 6 | Warnings Monitor | Parses official IMS weather warnings | Fetch IMS Warnings |
 | 7 | Communications Officer | Sends new flood warnings and all-clears, avoiding repeats | Get Alert Plan, Get Affected Roads for Basin, Send Telegram Alert, Log Sent Alert |
 
-The Telegram Analyst task is commented out of the crew's task list in
-`src/crew/aegiseco_crew.py` because the Telethon session for
-`search_telegram_channels_tool` currently isn't authenticated, which was disrupting
-the cycle. Re-enable it there once `python scripts/setup_telegram_session.py` has
-completed a successful login.
+The Telegram Analyst relies on an authenticated Telethon user session
+(`aegiseco_telegram.session`, created once via `python scripts/setup_telegram_session.py`
+— see Setup). If that session ever expires or gets revoked, re-run the setup script to
+re-authenticate; the tool will return an error in the meantime without breaking the rest
+of the cycle.
 
 The crew runs sequentially in this order. If every LLM attempt fails, `main.py` falls
 back to a rule-based check: run ML inference directly and use the same alert plan
@@ -206,11 +207,12 @@ authentication) — see `frontend/utils/permissions.py` for the access table.
 - **Councils Info** — raw view of the `councils` table.
 - **System Logs** — placeholder for a future live agent-activity feed.
 - **Social Updates** — one card per intel-gathering agent (OSINT, RSS, Telegram, Warnings
-  Monitor) showing its most recent check-in: a humanized summary (e.g. "Checked Ynet,
-  Walla, and Mako for flood-related news — nothing found"), a relative timestamp, a status
-  badge (FINDINGS / ALL CLEAR / UNAVAILABLE), and an expandable list of what it found.
-  Backed by the `social_updates` table, written to by the agent tools in
-  `src/crew/tools/data_tools.py`.
+  Monitor) plus a card for the Communications Officer's alert decisions, each showing its
+  most recent check-in: a humanized summary (e.g. "Checked Ynet, Walla, and Mako for
+  flood-related news — nothing found", or "Sent new flood warning for Harod (99%)"), a
+  relative timestamp, a status badge (FINDINGS / ALL CLEAR / UNAVAILABLE), and an
+  expandable list of what it found. Backed by the `social_updates` table, written to by
+  the agent tools in `src/crew/tools/data_tools.py` and `src/crew/tools/db_tools.py`.
 
 ## Database
 
@@ -223,7 +225,8 @@ Neon PostgreSQL + PostGIS. Key tables/views:
 - `main_basins_status` — latest ML inference result (alert flag + probability) per main basin
 - `settlements` — councils/cities with rainfall forecasts for the City Control Center
 - `social_updates` — per-run activity log from the intel-gathering agents (OSINT, RSS,
-  Telegram, Warnings Monitor), powering the dashboard's Social Updates tab
+  Telegram, Warnings Monitor) and the Communications Officer's alert decisions, powering
+  the dashboard's Social Updates tab
 - `alert_log` — history of flood-warning and all-clear messages sent per basin, used
   to avoid repeating an active alert every hour and to detect when an all-clear is due
 

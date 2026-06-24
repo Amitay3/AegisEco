@@ -4,7 +4,7 @@ from crewai.tools import tool
 from dotenv import load_dotenv
 import joblib
 import glob
-from src.database.db_manager import get_live_features_for_model
+from src.database.db_manager import get_live_features_for_model, save_social_update_to_db
 
 
 load_dotenv()
@@ -294,7 +294,33 @@ def get_alert_plan_tool() -> str:
     try:
         new_alerts, all_clears, no_action = _get_alert_plan()
     except Exception as e:
+        save_social_update_to_db(
+            "Communications Officer", "alert", "error",
+            "Couldn't check the alert plan — database query failed."
+        )
         return f"Database query failed: {e}"
+
+    parts, details = [], []
+    if new_alerts:
+        parts.append("new flood warning for " + ", ".join(f"{b} ({p:.1f}%)" for b, p, _ in new_alerts))
+        details += [{"basin": b, "probability": p, "action": "flood_warning"} for b, p, _ in new_alerts]
+    if all_clears:
+        parts.append("all-clear for " + ", ".join(b for b, _, _ in all_clears))
+        details += [{"basin": b, "probability": p, "action": "all_clear"} for b, p, _ in all_clears]
+
+    if parts:
+        save_social_update_to_db(
+            "Communications Officer", "alert",
+            "findings" if new_alerts else "no_findings",
+            "Sent " + " and ".join(parts) + ".",
+            details=details
+        )
+    else:
+        save_social_update_to_db(
+            "Communications Officer", "alert", "no_findings",
+            "Checked alert state for all basins — no changes, nothing to broadcast."
+        )
+
     return _format_alert_plan(new_alerts, all_clears, no_action)
 
 

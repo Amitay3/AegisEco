@@ -122,9 +122,9 @@ class AegisEcoCrew():
                 self.analyze_risk_task(),      # 2. Run ML Inference
                 self.verify_floods_task(),     # 3. DuckDuckGo OSINT
                 self.verify_rss_task(),        # 4. Israeli News RSS
-                # self.verify_telegram_task(), # Temporarily disabled - Telegram session auth is unreliable
-                self.monitor_warnings_task(),  # 5. IMS Warnings
-                self.alert_task()              # 6. Send Alert
+                self.verify_telegram_task(),   # 5. Telegram Emergency Channels
+                self.monitor_warnings_task(),  # 6. IMS Warnings
+                self.alert_task()              # 7. Send Alert
             ],
             process=Process.sequential,
             verbose=True
