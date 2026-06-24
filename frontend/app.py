@@ -6,8 +6,8 @@ from utils.db_connector import run_query
 from utils.permissions import has_access
 from components.risk_map import render_risk_map
 from streamlit_js_eval import get_geolocation
-from datetime import datetime
 from zoneinfo import ZoneInfo
+import pandas as pd
 
 def _format_relative_time(ts):
     try:
@@ -203,6 +203,20 @@ if not st.session_state.is_authenticated:
         elif selected_role in ["City", "Authority"] and selected_entity is not None:
             login_disabled = False
             
+        st.markdown("""
+            <style>
+            .stButton button[kind="primary"] {
+                background-color: #28a745 !important; 
+                border-color: #28a745 !important;
+                color: white !important;
+            }
+            .stButton button[kind="primary"]:hover {
+                background-color: #218838 !important; 
+                border-color: #218838 !important;
+            }
+            </style>
+        """, unsafe_allow_html=True)
+        
         if st.button("Enter AegisEco System", use_container_width=True, disabled=login_disabled, type="primary"):
             st.session_state.is_authenticated = True
             st.session_state.user_role = selected_role
@@ -215,6 +229,22 @@ user_role = st.session_state.user_role
 active_entity = st.session_state.specific_entity
 
 with st.sidebar:
+    st.markdown("""
+        <style>
+        [data-testid="stSidebarUserContent"] {
+            padding-bottom: 80px !important;
+        }
+        
+        [data-testid="stSidebarUserContent"] [data-testid="stVerticalBlock"] > div.element-container:last-child {
+            position: absolute !important;
+            bottom: 25px !important;
+            left: 1rem !important;
+            right: 1rem !important;
+            width: auto !important;
+        }
+        </style>
+    """, unsafe_allow_html=True)
+    
     st.image(logo_path, use_container_width=True)
     st.divider()
     
@@ -230,6 +260,10 @@ with st.sidebar:
         st.session_state.user_role = None
         st.session_state.specific_entity = None
         st.session_state.selected_city = None
+        st.rerun()
+        
+    if st.button("Refresh Data", use_container_width=True):
+        st.cache_data.clear()
         st.rerun()
 
 alert_basins = []
@@ -251,13 +285,53 @@ if alert_basins:
         f'<div class="main-status-box status-danger">FLOOD DANGER DETECTED IN: {basins_str.upper()}<div class="danger-subtext">EMERGENCY PROTOCOLS ACTIVE</div></div>',
         unsafe_allow_html=True
     )
+    
+    if user_role == "Citizen":
+        with st.expander("Personal Instructions", expanded=False):
+            st.warning(
+                "**Personal Safety Protocol:**\n"
+                "1. Avoid driving or walking through flooded roads.\n"
+                "2. Move to higher ground immediately.\n"
+                "3. Follow updates from local emergency services."
+            )
+            
+    elif user_role == "City":
+        with st.expander(f"City Instructions ({active_entity})", expanded=False):
+            st.warning(
+                "**Required Municipality Actions:**\n"
+                "1. Deploy municipal pumps to known low-elevation areas.\n"
+                "2. Clear drainage grates and sewage entries immediately.\n"
+                "3. Prepare emergency response teams for deployment."
+            )
+            
+    elif user_role == "Authority":
+        if active_entity == "Police":
+            with st.expander("Police Instructions", expanded=False):
+                st.warning(
+                    "**Police Response Protocol:**\n"
+                    "1. Enforce immediate road closures in the affected zones.\n"
+                    "2. Coordinate with local municipalities for traffic diversion.\n"
+                    "3. Assist in civilian evacuations and secure affected perimeters."
+                )
+        elif active_entity == "Fire & Rescue":
+            with st.expander("Fire & Rescue Instructions", expanded=False):
+                st.warning(
+                    "**Fire & Rescue Protocol:**\n"
+                    "1. Place swift-water rescue teams on high alert.\n"
+                    "2. Prepare rescue boats and specialized high-clearance vehicles.\n"
+                    "3. Coordinate with Police and City control centers for potential extraction operations."
+                )
+        else:
+            with st.expander("Authority Instructions", expanded=False):
+                st.warning("Follow standard emergency response procedures for flooding events.")
+
 else:
-    st.markdown('<div class="main-status-box status-ok">ALL SYSTEMS NORMAL - NO IMMEDIATE THREATS</div>', unsafe_allow_html=True)
+    st.markdown('<div class="main-status-box status-ok">NO IMMEDIATE THREATS</div>', unsafe_allow_html=True)
 
 if 'db_offline_since' not in st.session_state:
     st.session_state.db_offline_since = None
-if 'last_successful_update' not in st.session_state:
-    st.session_state.last_successful_update = datetime.now(ZoneInfo("Asia/Jerusalem")).strftime('%H:%M')
+
+st.session_state.last_successful_update = datetime.now(ZoneInfo("Asia/Jerusalem")).strftime('%H:%M')
 
 is_stale = False
 if st.session_state.db_offline_since is not None:
@@ -281,7 +355,7 @@ if has_access(user_role, "view_risk_map"):
 if has_access(user_role, "view_city_dashboard"):
     available_tabs.append("City Control Center")
 if has_access(user_role, "view_basins_data"):
-    available_tabs.append("Councils Info")
+    available_tabs.append("Database Info")
 if has_access(user_role, "view_social_feed"):
     available_tabs.append("Social Updates")
 
@@ -369,13 +443,35 @@ if has_access(user_role, "view_city_dashboard"):
 
 if has_access(user_role, "view_basins_data"):
     with tabs[tab_index]:
-        st.subheader("Regional Councils Registry")
-        st.write("Live data from the 'councils' database table:")
+        st.subheader("Database Info")
+        
+        st.markdown("**Main Basins Status Table**")
         try:
-            councils_df = run_query("SELECT * FROM councils;")
-            st.dataframe(councils_df, use_container_width=True)
+            main_basins_df = run_query("SELECT * FROM main_basins_status;")
+            
+            if not main_basins_df.empty:
+                last_col = main_basins_df.columns[-1]
+                
+                main_basins_df[last_col] = pd.to_datetime(main_basins_df[last_col])
+                
+                if main_basins_df[last_col].dt.tz is None:
+                    main_basins_df[last_col] = main_basins_df[last_col].dt.tz_localize('UTC')
+                    
+                main_basins_df[last_col] = main_basins_df[last_col].dt.tz_convert('Asia/Jerusalem').dt.strftime('%Y-%m-%d %H:%M:%S')
+
+            st.dataframe(main_basins_df, use_container_width=True)
         except Exception as e:
             st.error(f"Error fetching data: {e}")
+            
+        st.divider()
+        
+        st.markdown("**Settlements Table**")
+        try:
+            settlements_data_df = run_query("SELECT * FROM settlements;")
+            st.dataframe(settlements_data_df, use_container_width=True)
+        except Exception as e:
+            st.error(f"Error fetching data: {e}")
+            
     tab_index += 1
 
 if has_access(user_role, "view_social_feed"):

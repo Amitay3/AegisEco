@@ -55,7 +55,6 @@ def map_and_details_fragment(all_data_df, alert_sub_basins, geojson_data):
     if has_location:
         folium.Marker(
             location=[st.session_state.user_lat, st.session_state.user_lon],
-            popup=folium.Popup("<b>📍 You are here</b>", max_width=200),
             tooltip="My Location",
             icon=folium.Icon(color="green", icon="map-marker", prefix='fa') 
         ).add_to(m)
