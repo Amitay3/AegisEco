@@ -6,9 +6,9 @@ Populate the two underlying tables that feed the raw_hourly_basin_data view:
 Run from the project root:
     python scripts/simulate_flood_month.py
 
-This injects the synthetic storm, runs a quick ML self-test, then immediately
-runs one full AegisEco agent cycle (same as the first cycle of `python main.py`)
-- including Telegram alerts for any basin that now crosses its flood threshold.
+This injects the synthetic storm, then immediately runs one full AegisEco agent
+cycle (same as the first cycle of `python main.py`) - including Telegram alerts
+for any basin that now crosses its flood threshold.
 
 Storm timeline (relative to NOW):
     > 9 days ago    : dry baseline
@@ -187,20 +187,6 @@ def main():
 
     print(f"\nTotal: {len(rain_rows) + len(flow_rows):,} rows across both tables.")
     print(f"({total_hours}h × {len(ALL_BASINS)} basins)\n")
-
-    print("── ML inference self-test (reference_time = simulation anchor) ─")
-    from src.crew.tools.db_tools import _run_all_basins_inference
-    from src.database.db_manager import get_live_features_for_model
-    print(_run_all_basins_inference(reference_time=REFERENCE_TIME))
-
-    print("\n── Feature vectors for flood basins ────────────────────────")
-    for basin in FLOOD_BASINS:
-        df = get_live_features_for_model(basin, reference_time=REFERENCE_TIME)
-        if df is not None:
-            print(f"\n[{basin}]")
-            print(df.T.to_string())
-        else:
-            print(f"\n[{basin}] ⚠️  No features returned")
 
     print("\n── Running full AegisEco agent cycle (live demo) ───────────")
     print("This calls the LLM agents, cross-checks against OSINT/RSS/IMS, and may")

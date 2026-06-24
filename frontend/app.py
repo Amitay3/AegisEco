@@ -395,14 +395,15 @@ if has_access(user_role, "view_social_feed"):
 
         if updates_df is None or updates_df.empty:
             st.info("No agent activity yet. Once the agent pipeline runs, each agent's latest "
-                    "check-in (OSINT, RSS, Telegram, IMS Warnings) will appear here.")
+                    "check-in (OSINT, RSS, Telegram, IMS Warnings, Alerts) will appear here.")
         else:
-            AGENT_ORDER = ["OSINT Analyst", "RSS Analyst", "Telegram Analyst", "Warnings Monitor"]
+            AGENT_ORDER = ["OSINT Analyst", "RSS Analyst", "Telegram Analyst", "Warnings Monitor", "Communications Officer"]
             AGENT_ICONS = {
                 "OSINT Analyst": "🔍",
                 "RSS Analyst": "📰",
                 "Telegram Analyst": "📡",
                 "Warnings Monitor": "⚠️",
+                "Communications Officer": "📢",
             }
             STATUS_STYLES = {
                 "findings": ("FINDINGS", "#fd7e14"),
@@ -451,4 +452,11 @@ if has_access(user_role, "view_social_feed"):
                                     st.markdown(f"- **@{item.get('channel')}** ({item.get('time')}): {item.get('text')}")
                                 elif source_type == "ims_warning":
                                     st.markdown(f"- **{item.get('title')}** — {item.get('description')}")
+                                elif source_type == "alert":
+                                    basin = item.get("basin")
+                                    prob = item.get("probability") or 0.0
+                                    if item.get("action") == "flood_warning":
+                                        st.markdown(f"- 🚨 **{basin}** — Flood Warning ({prob:.1f}%)")
+                                    else:
+                                        st.markdown(f"- ✅ **{basin}** — All Clear ({prob:.1f}%)")
     tab_index += 1
