@@ -452,21 +452,32 @@ def search_flood_news_tool(query: str) -> str:
     Searches the open web and news sites for real-time reports of flash floods.
     Input should be a specific search query (e.g., 'Israel flash flood Harod', 'שיטפון בנחל').
     """
-    current_date = datetime.now().strftime("%B %Y")
-    enhanced_query = f"{query} {current_date}"
-    
+    # Kept deliberately specific to flood/inundation terms. Bare "flood" and
+    # "wadi" are deliberately excluded — they match idiomatic usage ("flood of
+    # refugees" in unrelated war coverage) and generic desert/Dead-Sea geography
+    # articles respectively, both of which showed up as false positives in testing.
+    FLOOD_KEYWORDS = [
+        "שיטפון", "שיטפונות", "הצפה", "הצפות",
+        "flash flood", "flooding", "overflow"
+    ]
+
     try:
         with DDGS() as ddgs:
-            results = list(ddgs.text(enhanced_query, max_results=5, timelimit='d'))
+            raw_results = list(ddgs.text(query, max_results=5, timelimit='d', region='il-en'))
+
+        results = [
+            r for r in raw_results
+            if any(kw.lower() in f"{r.get('title', '')} {r.get('body', '')}".lower() for kw in FLOOD_KEYWORDS)
+        ]
 
         if not results:
             save_social_update_to_db(
                 "OSINT Analyst", "osint", "no_findings",
                 f"Searched the web for \"{query}\" — no recent flood reports found."
             )
-            return f"No recent news found from the past day for query: '{enhanced_query}'."
+            return f"No recent flood-related news found from the past day for query: '{query}'."
 
-        formatted_results = f"Search Results for '{enhanced_query}' (Past day ONLY):\n"
+        formatted_results = f"Search Results for '{query}' (Past day ONLY):\n"
         details = []
         for r in results:
             formatted_results += f"- Title: {r.get('title')}\n  Snippet: {r.get('body')}\n  Link: {r.get('href')}\n\n"

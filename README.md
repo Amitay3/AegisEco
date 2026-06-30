@@ -229,15 +229,3 @@ Neon PostgreSQL + PostGIS. Key tables/views:
   the dashboard's Social Updates tab
 - `alert_log` — history of flood-warning and all-clear messages sent per basin, used
   to avoid repeating an active alert every hour and to detect when an all-clear is due
-
-## Useful scripts
-
-- `scripts/simulate_flood_month.py` — injects a realistic synthetic flood month into the
-  database and runs ML inference against it, for demos/testing without waiting for real rain.
-- `scripts/check_roads.py` — verifies every main basin has road data.
-- `scripts/test_rss_tool.py` — checks all RSS feeds are reachable and returning results.
-- `scripts/setup_telegram_session.py` — one-time Telegram auth (see Setup).
-- `scripts/setup_social_updates_table.py` — one-time creation of the `social_updates` table
-  used by the Social Updates tab.
-- `scripts/setup_alert_log_table.py` — one-time creation of the `alert_log` table used
-  for alert deduplication and all-clear tracking.
