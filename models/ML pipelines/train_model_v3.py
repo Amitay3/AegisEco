@@ -118,7 +118,6 @@ model.fit(
 # ==========================================
 y_proba = model.predict_proba(X_test)[:, 1]
 
-# You can play with this!
 THRESHOLD = 0.3
 y_pred = (y_proba > THRESHOLD).astype(int)
 

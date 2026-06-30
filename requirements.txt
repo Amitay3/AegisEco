@@ -1,8 +1,6 @@
 # AI and Agents
 crewai==1.10.1
-langchain-google-genai
 langchain-community
-langchain-groq
 litellm
 
 # Core Dependencies (Pinned for Stability)
@@ -31,6 +29,8 @@ python-dotenv==1.1.1
 requests
 ddgs
 tzdata
+feedparser
+telethon
 
 # Scheduling
 apscheduler
