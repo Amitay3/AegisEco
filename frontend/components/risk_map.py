@@ -176,7 +176,7 @@ def map_and_details_fragment(all_data_df, alert_sub_basins, geojson_data):
             else:
                 st.error("Cannot load basin details: Database data is currently unavailable.")
         else:
-            st.info("Click on a basin on the map to view detailed risk assessment and affected routes.")
+            st.info("Click on a region on the map to view detailed risk assessment and affected routes.")
 
 def render_risk_map():
     if 'selected_basin' not in st.session_state:

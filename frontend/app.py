@@ -176,16 +176,21 @@ if not st.session_state.is_authenticated:
                 
                 if st.button("Use my location", use_container_width=True):
                     st.session_state.request_location = True
-                    st.toast("Loading location...")
+                    
 
             if st.session_state.get('request_location', False):
                 loc = get_geolocation()
                 if loc:
-                    st.session_state.user_lat = loc['coords']['latitude']
-                    st.session_state.user_lon = loc['coords']['longitude']
-                    st.session_state.request_location = False
-                    time.sleep(1)
-                    st.rerun()
+                    if 'coords' in loc:
+                        st.session_state.user_lat = loc['coords']['latitude']
+                        st.session_state.user_lon = loc['coords']['longitude']
+                        st.session_state.request_location = False
+                        st.toast("Loading location...")
+                        time.sleep(1)
+                        st.rerun()
+                    else:
+                        st.session_state.request_location = False
+                        st.error("Location permission not granted. Select your city manually.")
 
         elif selected_role == "Authority":
             selected_entity = st.selectbox(
@@ -380,7 +385,7 @@ if has_access(user_role, "view_city_dashboard"):
             st.write("Search and select a municipality to view localized data and alerts.")
             if city_list:
                 active_city = st.selectbox(
-                    "Search Database:",
+                    "Search:",
                     options=city_list,
                     index=None,
                     placeholder="Start typing..."
