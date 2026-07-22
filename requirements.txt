@@ -1,5 +1,5 @@
 # AI and Agents
-crewai==1.10.1
+crewai[google-genai]==1.10.1
 langchain-community
 litellm
 
