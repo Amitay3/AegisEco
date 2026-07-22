@@ -1,231 +1,209 @@
-# AegisEco
+# AegisEco — AI Flash Flood Early Warning System
 
-AegisEco is an AI-powered flash-flood early-warning system for Israel. It combines live
-meteorological and hydrological data, 16 per-basin XGBoost flood models, a 7-agent CrewAI
-verification pipeline, and a Streamlit dashboard to detect, verify, and broadcast flood
-alerts in near real time.
+**Live Dashboard: [aegiseco.streamlit.app](https://aegiseco.streamlit.app)**
 
-## How it works
+AegisEco is an AI-powered flash-flood early-warning system for Israel. It monitors live meteorological and hydrological data around the clock, runs 16 per-basin machine learning flood models, and deploys a 7-agent AI verification pipeline that cross-references real-world reports before broadcasting alerts — minimizing both false alarms and missed events.
 
-1. **Data ingestion** — `src/data_sentinel` pulls live rain data from the Israel
-   Meteorological Service (IMS) API and river flow data from Weather2Day into a Neon
-   PostgreSQL/PostGIS database (every 10 minutes).
-2. **ML inference** — 16 XGBoost classifiers (one per main drainage basin) score the
-   latest hourly features and flag basins likely to flood in the next 1–3 hours.
-3. **Agent verification & alerting** — a sequential CrewAI pipeline (runs hourly)
-   re-checks ML alerts against OSINT search, Israeli news RSS, public emergency
-   Telegram channels, and official IMS warnings, then sends a Telegram alert for
-   any newly-flagged basin and a
-   stand-down message once a previously-alerted basin returns to normal. Each
-   basin's alert state is tracked in `alert_log` so the same warning isn't
-   repeated every hour.
-4. **Dashboard** — a Streamlit app shows a live risk map of Israel's basins, affected
-   roads, council/settlement forecasts, and role-based views (Citizen / City / Authority).
+---
 
-## Project Structure
+## The Problem
 
-```text
-AegisEco/
-├── main.py                      # Entry point: runs one full cycle, then schedules
-│                                 # hourly (full) and 10-min (data-only) cycles
-├── requirements.txt
-├── .env.template                # Copy to .env and fill in your keys
-│
-├── src/
-│   ├── crew/                    # CrewAI agent pipeline
-│   │   ├── aegiseco_crew.py     # Defines the 7 agents, their tools, and task order
-│   │   ├── config/
-│   │   │   ├── agents.yaml      # Agent roles, goals, backstories
-│   │   │   └── tasks.yaml       # Task descriptions & expected outputs
-│   │   └── tools/
-│   │       ├── data_tools.py    # Sync rain/flow/forecast data; RSS, Telegram, OSINT search
-│   │       ├── db_tools.py      # ML inference, rainfall queries, affected-roads lookup
-│   │       └── alert_tools.py   # Telegram broadcast
-│   │
-│   ├── data_sentinel/           # Live data ingestion
-│   │   ├── ims_client.py        # IMS rain API client
-│   │   └── flow_ingestor.py     # Weather2Day river-flow scraper
-│   │
-│   └── database/
-│       └── db_manager.py        # Neon connection + feature engineering for live ML inference
-│
-├── models/                       # ML training pipeline & artifacts
-│   ├── models/*.pkl              # 16 trained XGBoost models (one per basin)
-│   ├── ML pipelines/train_model_v3.py   # Training script (temporal split, class balancing)
-│   ├── scripts/                  # Feature engineering, threshold tuning, data prep
-│   ├── basin_routing.py          # Sub-basin → main-basin grouping reference table
-│   └── ims_data/, flow_data/, engineered_*/, organized_data/   # Raw & processed training data
-│
-├── frontend/                      # Streamlit dashboard
-│   ├── app.py                     # Page layout, status banner, role-based tabs
-│   ├── components/
-│   │   └── risk_map.py            # Interactive Folium risk map + basin detail panel
-│   ├── .streamlit/
-│   │   └── secrets.toml           # Local-only DB credentials (gitignored, not committed)
-│   ├── assets/                    # Logo & favicon
-│   └── utils/
-│       ├── db_connector.py        # Cached DB queries with retry/offline detection
-│       └── permissions.py         # Role-based access control
-│
-├── scripts/                          # One-off / maintenance scripts
-│   ├── simulate_flood_month.py       # Inject a synthetic flood month for demos/testing
-│   ├── setup_telegram_session.py     # One-time Telegram auth
-│   ├── setup_social_updates_table.py # One-time DB setup for the Social Updates feed
-│   ├── setup_alert_log_table.py      # One-time DB setup for alert dedup/all-clear tracking
-│   ├── check_roads.py                # Sanity-check basin → road mappings
-│   └── test_rss_tool.py              # Smoke-test the RSS news feeds
-│
-└── data/                             # Static reference data
-    ├── basins.geojson                # Basin polygons used by the risk map
-    ├── basins_full_data.geojson      # Full basin geometry/attribute set
-    ├── roads_data.json               # Road network for affected-roads lookup
-    └── ims_to_db_mapping.csv         # IMS station → basin mapping
+Flash floods in Israel kill people and cause massive infrastructure damage every year, yet existing alert systems are largely manual, slow, or basin-agnostic. By the time an official warning reaches the public, the flood may already be in motion. AegisEco aims to bridge that gap with automated, continuous, data-driven detection — giving emergency services and the public an earlier signal.
+
+---
+
+## System Architecture
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                     DATA SOURCES                        │
+│   IMS API (rain stations)    Weather2Day (river flow)   │
+└────────────────────┬────────────────────────────────────┘
+                     │  every 10 minutes
+                     ▼
+┌─────────────────────────────────────────────────────────┐
+│           Neon PostgreSQL + PostGIS Database            │
+│  rain_measurements  │  raw_flow_measurements  │  ...    │
+└────────────────────┬────────────────────────────────────┘
+                     │  every hour
+          ┌──────────┴──────────┐
+          ▼                     ▼
+┌─────────────────┐   ┌────────────────────────────────┐
+│  16 XGBoost     │   │     7-Agent CrewAI Pipeline    │
+│  ML Models      │   │  (OSINT · RSS · Telegram · IMS │
+│  (per basin)    │   │   Warnings · Communications)   │
+└────────┬────────┘   └────────────────┬───────────────┘
+         └──────────────┬──────────────┘
+                        ▼
+           ┌────────────────────────┐
+           │   Telegram Alerts      │
+           │   Streamlit Dashboard  │
+           └────────────────────────┘
 ```
 
-## Setup
+---
 
-1. **Install dependencies**
+## How It Works — End to End
 
-   ```bash
-   pip install -r requirements.txt
-   ```
+### 1. Live Data Ingestion (`src/data_sentinel/`)
 
-2. **Environment variables** — copy `.env.template` to `.env` and fill in:
+Every 10 minutes, two parallel scrapers run:
 
-   | Variable | Used for |
-   |---|---|
-   | `GEMINI_API_KEY` / `GEMINI_BACKUP_API_KEY` | LLM powering the CrewAI agents (with fallback) |
-   | `IMS_API_KEY` | Israel Meteorological Service rain data |
-   | `DATABASE_URL` | Neon PostgreSQL/PostGIS connection string |
-   | `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | Sending alerts to the Telegram channel |
-   | `TELEGRAM_API_ID` / `TELEGRAM_API_HASH` | Monitoring emergency Telegram channels |
-   | `CREWAI_TELEMETRY_ENABLED` | Set to `false` to disable CrewAI telemetry |
+- **IMS Client** (`ims_client.py`) — queries the Israel Meteorological Service API concurrently across all rain stations using 10 threads. Each reading includes station ID, rainfall amount, timestamp, and the geographic region it belongs to (`region_id`). Readings older than 24 hours are discarded.
+- **Flow Ingestor** (`flow_ingestor.py`) — fetches river flow data from Weather2Day. Hebrew station names are mapped to English basin names via a hardcoded routing table. When multiple stations feed the same basin, the highest flow reading is kept.
 
-3. **Frontend secrets** — create `frontend/.streamlit/secrets.toml` (gitignored, not
-   committed) with:
+Both write into the Neon PostgreSQL database, which aggregates readings into hourly basin-level views for ML consumption.
 
-   ```toml
-   DATABASE_URL = "your-neon-connection-string"
-   ```
+### 2. Machine Learning Inference (`src/crew/tools/db_tools.py`)
 
-   Streamlit reads secrets separately from `.env`, so this needs its own copy.
+Every hour, 16 XGBoost models run in sequence — one per main drainage basin. Each model:
 
-4. **Telegram monitoring (optional, one-time)**:
+1. Loads its `.pkl` file containing the trained model, feature names, decision threshold, and flood stage reference.
+2. Calls `db_manager.get_live_features_for_model()` to reconstruct the same 38-feature vector used during training (spatial rain stats, flow lags, soil moisture EWM, rolling rain sums, cyclical seasonality).
+3. Runs `predict_proba` and compares the output against the basin's own tuned decision threshold.
+4. Writes `has_flood_alert` (bool) and `flood_probability` (float) to `main_basins_status`.
 
-   ```bash
-   python scripts/setup_telegram_session.py
-   ```
+The result is a per-basin binary flood flag plus probability, updated every hour.
 
-## Running the system
+### 3. AI Verification Pipeline (`src/crew/`)
 
-- **Full system** — data ingestion + 7-agent pipeline hourly, data-only sync every 10 min:
+Once inference completes, a 7-agent CrewAI sequential pipeline verifies and acts on the results:
 
-  ```bash
-  python main.py
-  ```
+| # | Agent | What It Does |
+|---|---|---|
+| 1 | **Data Engineer** | Syncs rain, flow, and city forecast data into the database |
+| 2 | **Hydrological Analyst** | Runs the 16 XGBoost models and reports per-basin flood probabilities |
+| 3 | **OSINT Analyst** | Searches the web for real-time flood reports using Hebrew and English flood keywords, scoped to Israeli results |
+| 4 | **RSS Analyst** | Scans Israeli news feeds (Ynet, Walla, Mako, Times of Israel) for flood-related headlines |
+| 5 | **Telegram Analyst** | Monitors public emergency Telegram channels via Telethon |
+| 6 | **Warnings Monitor** | Parses official IMS weather warnings |
+| 7 | **Communications Officer** | Sends new flood warnings and all-clears via Telegram; avoids duplicates using `alert_log` |
 
-- **Dashboard**:
+Agents run sequentially — each one's output is available as context to the next. The LLM (Gemini) authors messages and gathers corroborating evidence, but routing decisions (which basins get alerts) are made entirely by deterministic Python logic in `_get_alert_plan()`.
 
-  ```bash
-  streamlit run frontend/app.py
-  ```
+### 4. Alert Logic — Deterministic, Not LLM-Driven
 
-## The Agent Pipeline
+A key design principle: **the LLM decides nothing about who gets alerted.**
 
-| # | Agent | Role | Tools |
-|---|---|---|---|
-| 1 | Data Engineer | Syncs rain, flow, and forecast data into the database | Sync Rain Data, Sync Flow Data, Update Database Forecasts |
-| 2 | Hydrological Analyst | Runs the 16 XGBoost flood models on live data | Run ML Inference on All Basins |
-| 3 | OSINT Analyst | Searches the web for real-world flood reports | Search Web and News for Floods |
-| 4 | RSS Analyst | Scans Israeli news feeds (Ynet, Walla, Mako, Times of Israel) | Search Israeli News RSS Feeds |
-| 5 | Telegram Analyst | Monitors public emergency Telegram channels | Search Telegram Emergency Channels |
-| 6 | Warnings Monitor | Parses official IMS weather warnings | Fetch IMS Warnings |
-| 7 | Communications Officer | Sends new flood warnings and all-clears, avoiding repeats | Get Alert Plan, Get Affected Roads for Basin, Send Telegram Alert, Log Sent Alert |
+`_get_alert_plan()` in `db_tools.py` is pure Python. It compares `main_basins_status` (current ML result) against `alert_log` (last action taken per basin) and produces three lists:
 
-The Telegram Analyst relies on an authenticated Telethon user session
-(`aegiseco_telegram.session`, created once via `python scripts/setup_telegram_session.py`
-— see Setup). If that session ever expires or gets revoked, re-run the setup script to
-re-authenticate; the tool will return an error in the meantime without breaking the rest
-of the cycle.
+- **New alert** — basin just crossed into flood territory, or its probability rose ≥15 points since last warning → send one message covering all such basins
+- **All-clear** — previously-alerted basin returned to normal → send one stand-down message
+- **No action** — state unchanged since last logged entry → nothing sent (prevents hourly spam)
 
-The crew runs sequentially in this order. If every LLM attempt fails, `main.py` falls
-back to a rule-based check: run ML inference directly and use the same alert plan
-(see below) to send a failsafe Telegram alert only for newly-flagged or newly-cleared
-basins.
+The LLM's job is to format the message text and incorporate corroborating evidence from agents 3–6. The decision itself is code.
 
-### Alert deduplication & all-clear
+### 5. Streamlit Dashboard (`frontend/`)
 
-The Communications Officer's `alert_task` starts by calling the **Get Alert Plan**
-tool, which compares each basin's current `main_basins_status.has_flood_alert` against
-the most recent entry for that basin in `alert_log`:
-
-- **New flood warning** — a basin just crossed into alert (or its probability rose by
-  ≥15 percentage points since the last warning while still in alert) → send one
-  emergency message covering all such basins, then log each as `flood_warning`.
-- **All-clear** — a basin that had an active `flood_warning` has dropped back to
-  normal → send one stand-down message covering all such basins, then log each as
-  `all_clear`.
-- **No action** — a basin's alert state hasn't changed since the last logged entry
-  (already warned and still in alert, or still normal) → nothing is sent, so an
-  ongoing flood doesn't trigger a fresh Telegram message every hour.
-
-## ML Models
-
-- 16 XGBoost classifiers, one per main drainage basin (Harod, Sorek, Ayalon, Beer Sheva,
-  Dishon, Gerar, Hadera, Keziv, Kishon, Lachish, Paran, Shikma, Taninim, Yarkon, Zin,
-  Alexander), predicting flood probability 1–3 hours ahead.
-- Trained on 2010–2019 historical rain (IMS) and flow (Israeli Hydrological Service)
-  data with a temporal train/test split to avoid data leakage.
-- Each model has its own decision threshold derived from basin-specific flow-duration
-  curves (`models/scripts/find_threshold.py`).
-- Feature engineering (`models/scripts/merge_and_lag_v2.py`): spatial rain statistics,
-  flow lags, soil-moisture EWM, rolling rain sums, and cyclical seasonality encoding.
-- `src/database/db_manager.get_live_features_for_model()` reproduces this pipeline from
-  live database data for real-time inference.
-
-## Dashboard
-
-The Streamlit dashboard (`frontend/app.py`) shows a live system-status banner (green/red
-based on `main_basins_status.has_flood_alert`) and a set of tabs whose visibility depends
-on the selected role:
+The dashboard shows a live view of the system state, auto-refreshing every 60 seconds.
 
 | Tab | Citizen | City | Authority |
 |---|---|---|---|
 | Risk Map | ✅ | ✅ | ✅ |
 | City Control Center | | ✅ | ✅ |
 | Councils Info | | | ✅ |
-| System Logs | | | ✅ |
 | Social Updates | ✅ | ✅ | ✅ |
 
-The role selector in the sidebar is currently a free "view-as" switcher (no real
-authentication) — see `frontend/utils/permissions.py` for the access table.
-
-- **Risk Map** (`frontend/components/risk_map.py`) — an interactive Folium map of all
-  sub-basins, colored by live ML alert status. Clicking a basin shows its main basin,
-  flood probability, and affected roads.
+- **Risk Map** — interactive Folium map of all sub-basins, colored red (alert) or blue (normal) based on live ML results. Clicking a basin shows flood probability and affected roads.
 - **City Control Center** — per-municipality flood status and 6-hour rainfall forecasts.
-- **Councils Info** — raw view of the `councils` table.
-- **System Logs** — placeholder for a future live agent-activity feed.
-- **Social Updates** — one card per intel-gathering agent (OSINT, RSS, Telegram, Warnings
-  Monitor) plus a card for the Communications Officer's alert decisions, each showing its
-  most recent check-in: a humanized summary (e.g. "Checked Ynet, Walla, and Mako for
-  flood-related news — nothing found", or "Sent new flood warning for Harod (99%)"), a
-  relative timestamp, a status badge (FINDINGS / ALL CLEAR / UNAVAILABLE), and an
-  expandable list of what it found. Backed by the `social_updates` table, written to by
-  the agent tools in `src/crew/tools/data_tools.py` and `src/crew/tools/db_tools.py`.
+- **Social Updates** — one card per agent showing its most recent activity: what it searched, what it found, and what action was taken. Backed by the `social_updates` table.
 
-## Database
+---
 
-Neon PostgreSQL + PostGIS. Key tables/views:
+## Machine Learning Details
 
-- `rain_measurements`, `raw_flow_measurements` — raw 10-minute/hourly sensor data
-- `raw_hourly_basin_data` — view joining hourly rain and flow per basin, used for ML
-  feature extraction
-- `basins` — basin geometries, `main_basin_name` groupings, and `main_roads`
-- `main_basins_status` — latest ML inference result (alert flag + probability) per main basin
-- `settlements` — councils/cities with rainfall forecasts for the City Control Center
-- `social_updates` — per-run activity log from the intel-gathering agents (OSINT, RSS,
-  Telegram, Warnings Monitor) and the Communications Officer's alert decisions, powering
-  the dashboard's Social Updates tab
-- `alert_log` — history of flood-warning and all-clear messages sent per basin, used
-  to avoid repeating an active alert every hour and to detect when an all-clear is due
+**16 XGBoost classifiers**, one per main drainage basin:
+
+- **Training data**: 2010–2019 historical IMS rain and Israeli Hydrological Service flow data
+- **Target**: binary flood flag (`flow > basin_flood_stage_m3s`) 1–3 hours ahead
+- **Split**: temporal at `2016-01-01` (no random split — avoids data leakage in time series)
+- **Class imbalance**: handled via `scale_pos_weight = (non-flood hours) / (flood hours)`, which makes the model weight missed floods proportionally more than false positives
+- **Per-basin thresholds**: each model has its own `decision_threshold` (ranging from 1% to 30%), tuned from flow-duration curves. A basin flagging at "3% probability" is meaningful — it reflects 30× above that basin's normal baseline, not a human-intuitive percentage.
+
+The live inference pipeline (`db_manager.get_live_features_for_model()`) reproduces all 38 features identically from the live database — matching the offline training pipeline in `models/scripts/merge_and_lag_v2.py`.
+
+---
+
+## Project Structure
+
+```text
+AegisEco/
+├── main.py                          # Scheduler: full cycle hourly, data-only every 10 min
+├── requirements.txt
+├── .env.template                    # Environment variable reference
+│
+├── src/
+│   ├── crew/                        # CrewAI agent pipeline
+│   │   ├── aegiseco_crew.py         # 7 agents, tools, sequential task order
+│   │   ├── config/
+│   │   │   ├── agents.yaml          # Agent roles, goals, backstories
+│   │   │   └── tasks.yaml           # Task prompts and expected outputs
+│   │   └── tools/
+│   │       ├── data_tools.py        # Data sync, OSINT search, RSS, Telegram reading
+│   │       ├── db_tools.py          # ML inference, rainfall queries, alert plan
+│   │       └── alert_tools.py       # Telegram broadcast
+│   │
+│   ├── data_sentinel/               # Live data ingestion
+│   │   ├── ims_client.py            # IMS rain API — concurrent, 10 threads
+│   │   └── flow_ingestor.py         # Weather2Day river flow scraper
+│   │
+│   └── database/
+│       └── db_manager.py            # DB connection + live feature engineering for ML
+│
+├── models/
+│   ├── models/*.pkl                 # 16 trained XGBoost models
+│   ├── ML pipelines/train_model_v3.py   # Training script
+│   ├── scripts/                     # Feature engineering, threshold tuning, data prep
+│   └── basin_routing.py             # Sub-basin → main basin routing table
+│
+├── frontend/
+│   ├── app.py                       # Main Streamlit app
+│   ├── components/risk_map.py       # Folium map + basin detail panel
+│   └── utils/
+│       ├── db_connector.py          # Cached DB queries with retry/offline detection
+│       └── permissions.py           # Role-based access control
+│
+├── scripts/
+│   ├── simulate_flood_month.py      # Inject synthetic flood data for demos
+│   ├── cleanup_simulation.py        # Revert simulate_flood_month.py changes
+│   └── setup_telegram_session.py    # One-time Telegram auth for channel monitoring
+│
+└── data/
+    ├── basins.geojson               # Basin polygons for the risk map
+    ├── roads_data.json              # Road network for affected-roads lookup
+    └── ims_to_db_mapping.csv        # IMS station → basin mapping
+```
+
+---
+
+## Database Schema
+
+Neon PostgreSQL + PostGIS. Key tables:
+
+| Table / View | Purpose |
+|---|---|
+| `rain_measurements` | Raw 10-minute rain readings from IMS stations |
+| `raw_flow_measurements` | Raw hourly river flow readings from Weather2Day |
+| `raw_hourly_basin_data` | View: joins rain + flow per basin per hour — ML feature source |
+| `main_basins_status` | Latest ML result per basin: `has_flood_alert`, `flood_probability`, `last_inference_time` |
+| `alert_log` | History of flood warnings and all-clears sent per basin — drives deduplication |
+| `social_updates` | Agent activity feed powering the Social Updates dashboard tab |
+| `basins` | Basin geometries, sub-basin → main basin grouping, affected roads per basin |
+| `settlements` | Councils/cities with 6-hour rainfall forecasts for the City Control Center |
+
+---
+
+## Tech Stack
+
+| Layer | Technology |
+|---|---|
+| ML models | XGBoost, scikit-learn, pandas, numpy |
+| Agent framework | CrewAI (sequential, 7 agents) |
+| LLM | Google Gemini 2.5 Flash (with fallback chain) |
+| Data ingestion | Python, requests, Telethon, feedparser |
+| Web search | DDGS (DuckDuckGo Search — no API key required) |
+| Database | Neon PostgreSQL + PostGIS |
+| Dashboard | Streamlit, Folium, streamlit-folium |
+| Scheduling | APScheduler |
+| Deployment | Railway (backend worker + Streamlit web service) |
+
